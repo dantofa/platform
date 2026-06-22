@@ -1,5 +1,19 @@
 {
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.3/.schema/devbox.schema.json",
-  "packages": ["uv@latest"],
-  "shell": {}
+  "packages": [
+    "uv@latest",
+    "just@latest",
+    "actionlint@latest",
+    "yamllint@latest",
+    "gh@latest",
+    "ratchet@latest"
+  ],
+  "aliases": {
+    "dctl": "uv run -- dctl"
+  },
+  "shell": {
+    "init_hook": [
+      "uv run -- pre-commit install"
+    ]
+  }
 }

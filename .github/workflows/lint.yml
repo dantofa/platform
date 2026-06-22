@@ -1,0 +1,36 @@
+---
+name: lint
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+permissions: {}
+env:
+  # Force plain output in CI logs; rich/Typer otherwise colorizes (e.g. under
+  # devbox's pseudo-terminal), which is noise when troubleshooting. FORCE_COLOR
+  # must be empty — any non-empty value, including "0", still forces color.
+  FORCE_COLOR: ""
+  NO_COLOR: "1"
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # ratchet:actions/checkout@v5
+        with:
+          fetch-depth: 0 # Required so hatch-vcs can derive the version.
+          persist-credentials: false
+
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # ratchet:jetify-com/devbox-install-action@v0.15.0
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: devbox run -- uv sync --locked
+
+      - name: Lint
+        run: devbox run -- just lint

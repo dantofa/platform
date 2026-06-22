@@ -1,0 +1,9 @@
+---
+version: 2
+updates:
+  # Keep the SHA-pinned GitHub Actions current (opens PRs that bump the pinned
+  # commit and version comment). Complements `just update` (manual ratchet run).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

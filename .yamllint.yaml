@@ -1,0 +1,22 @@
+---
+extends: default
+
+ignore: |
+  .venv/
+  .devbox/
+
+rules:
+  # Allow longer lines; CI/config YAML often has long action refs and URLs.
+  # SHA-pinned action refs + ratchet markers blow past any sane width, so
+  # line-length is not enforced inside the workflows directory.
+  line-length:
+    max: 120
+    ignore: |
+      .github/workflows/
+  # Only check truthy values, not keys: GitHub Actions' `on:` key is otherwise
+  # flagged because YAML 1.1 treats `on` as a boolean.
+  truthy:
+    check-keys: false
+  # ratchet writes its pin markers with a single space before `#`.
+  comments:
+    min-spaces-from-content: 1
