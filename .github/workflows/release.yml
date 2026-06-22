@@ -5,6 +5,12 @@ on:
     tags:
       - 'v*'
 permissions: {}
+env:
+  # Force plain output in CI logs; rich/Typer otherwise colorizes (e.g. under
+  # devbox's pseudo-terminal), which is noise when troubleshooting. FORCE_COLOR
+  # must be empty — any non-empty value, including "0", still forces color.
+  FORCE_COLOR: ""
+  NO_COLOR: "1"
 jobs:
   release:
     runs-on: ubuntu-latest

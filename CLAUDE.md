@@ -73,6 +73,12 @@ CI and pre-commit pick it up automatically.
   --locked`, then `devbox run -- just lint` / `just test`. Because it uses
   devbox, CI tooling versions match local. Keep CI steps as thin wrappers over
   `just`.
+- **CI forces plain (uncolored) output** via workflow-level `env: { FORCE_COLOR:
+  "", NO_COLOR: "1" }`. devbox's pseudo-terminal otherwise makes rich/Typer
+  colorize, which mangles logs and breaks substring assertions on `--help`.
+  `FORCE_COLOR` must be **empty** — any non-empty value (even `"0"`) still forces
+  color, and `FORCE_COLOR` overrides `NO_COLOR`. Tests also strip ANSI
+  defensively, so they pass regardless of color.
 - Requires **Python >= 3.13**.
 - **All repository update operations go through `just update`** — never bump
   pinned versions by hand. Today it runs `ratchet update` to refresh the
