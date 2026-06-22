@@ -1,12 +1,12 @@
 ---
-name: lint
+name: sast
 on:
   push:
     branches: [main, master]
   pull_request:
 permissions: {}
 jobs:
-  lint:
+  sast:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -27,4 +27,4 @@ jobs:
         run: devbox run -- uv sync --locked
 
       - name: Lint
-        run: devbox run -- just lint
+        run: devbox run -- just sast
