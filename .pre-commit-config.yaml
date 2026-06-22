@@ -1,0 +1,27 @@
+---
+repos:
+  - repo: local
+    hooks:
+      - id: just-format
+        name: just format
+        entry: just format
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      - id: just-lint
+        name: just lint
+        entry: just lint
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      - id: just-sast
+        name: just sast
+        entry: just sast
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
