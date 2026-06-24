@@ -6,14 +6,15 @@
     "actionlint@latest",
     "yamllint@latest",
     "gh@latest",
-    "ratchet@latest"
+    "ratchet@latest",
+    "shellcheck@latest"
   ],
   "aliases": {
     "dctl": "uv run -- dctl"
   },
   "shell": {
     "init_hook": [
-      "uv run -- pre-commit install"
+      "uv run -- pre-commit install -t pre-commit -t pre-push"
     ]
   }
 }

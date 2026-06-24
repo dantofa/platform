@@ -4,11 +4,32 @@ run *args:
 test *args:
   uv run -- pytest {{args}}
 
-lint:
+# Build the sdist + wheel into dist/.
+build:
+  uv build
+
+shellcheck:
+  #!/usr/bin/env bash
+  # Lint the shebang (script) recipes in this justfile with shellcheck. Line
+  # recipes and any containing just-interpolations are not valid standalone
+  # shell, so the second grep skips them (the char class avoids a literal
+  # interpolation token here).
+  for recipe in $(just --summary); do
+    body="$(just --show "$recipe")"
+    if printf '%s\n' "$body" | grep -Eq '^[[:space:]]*#!.*(bash|sh)' \
+       && ! printf '%s\n' "$body" | grep -q '[{][{]'; then
+      # Drop everything up to and including the (indented) shebang line; the
+      # shell is given via -s, and indented bash is valid.
+      printf '%s\n' "$body" | sed -n '/#!/,$p' | tail -n +2 | shellcheck -s bash -
+    fi
+  done
+
+lint: shellcheck
   #!/usr/bin/env bash
   set -euo pipefail
   uv run -- ruff check .
-  uv run -- ty check
+  uv run -- basedpyright .
+  uv run -- lint-imports
   actionlint
   yamllint .
 
@@ -21,6 +42,8 @@ update:
   find .github/workflows -name "*.yml" | xargs -L 1 ratchet update
 
 sast:
+  #!/usr/bin/env bash
+  export SKYLOS_PRIVATE_DEPS_ALLOW=dantofa 
   uv run -- skylos --format concise --danger --secrets --sca src
 
 github action:
