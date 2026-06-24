@@ -1,4 +1,8 @@
 ---
+# Fast checks (format, lint) run on every commit; heavier gate-before-share
+# checks (sast, build) run on push. Requires both hook types installed — the
+# devbox init_hook runs `pre-commit install -t pre-commit -t pre-push`.
+default_stages: [pre-commit]
 repos:
   - repo: local
     hooks:
@@ -25,3 +29,13 @@ repos:
         types: [python]
         pass_filenames: false
         require_serial: true
+        stages: [pre-push]
+
+      - id: just-build
+        name: just build
+        entry: just build
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+        stages: [pre-push]

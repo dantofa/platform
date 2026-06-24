@@ -14,8 +14,7 @@ dctl = "dantofa.cli.main:run"
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
-# Version is derived from git tags (e.g. `v0.1.0` -> `0.1.0`); never edited by
-# hand. See CLAUDE.md.
+# Version is derived from git tags (e.g. `v0.1.0` -> `0.1.0`)
 [tool.hatch.version]
 source = "vcs"
 
@@ -25,11 +24,28 @@ packages = ["src/dantofa"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.basedpyright]
+include = ["src", "tests"]
+reportCallInDefaultInitializer = false
+
+# Enforce the thin-command-layer rule: core holds all logic and must not depend
+# on the CLI layer or its framework. See CLAUDE.md "Architecture".
+[tool.importlinter]
+root_packages = ["dantofa"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "core stays framework- and CLI-free"
+type = "forbidden"
+source_modules = ["dantofa.core"]
+forbidden_modules = ["dantofa.cli", "typer", "click"]
+
 [dependency-groups]
 dev = [
+  "basedpyright>=1.39.8",
+  "import-linter>=2.11",
   "pre-commit>=4.6.0",
   "pytest>=9.1.1",
   "ruff>=0.15.18",
   "skylos>=4.25.0",
-  "ty>=0.0.51",
 ]

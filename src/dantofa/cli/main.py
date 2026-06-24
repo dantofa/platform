@@ -1,7 +1,6 @@
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
-
 import typer
+
+from dantofa.core import greeting, meta
 
 app = typer.Typer(help="dantofa command line utility.")
 
@@ -9,18 +8,14 @@ app = typer.Typer(help="dantofa command line utility.")
 def _version_callback(value: bool) -> None:
     if not value:
         return
-    try:
-        resolved = _pkg_version("dantofa-cli")
-    except PackageNotFoundError:  # not installed (e.g. running from source tree)
-        resolved = "0.0.0+unknown"
-    typer.echo(resolved)
+    typer.echo(meta.resolve_version())
     raise typer.Exit
 
 
 @app.command()
 def hello(
     name: str = "world",
-    version: bool = typer.Option(
+    _: bool = typer.Option(
         False,
         "--version",
         callback=_version_callback,
@@ -29,7 +24,7 @@ def hello(
     ),
 ) -> None:
     """Say hello."""
-    typer.echo(f"Hello, {name}!")
+    typer.echo(greeting.greet(name))
 
 
 def run() -> None:

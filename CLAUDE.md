@@ -6,8 +6,7 @@ tooling, or CI.
 ## What this is
 
 `dantofa-cli` is a Python CLI built with [Typer](https://typer.tiangolo.com/).
-The command logic lives in `src/dantofa/cli/main.py`, exposed as a Typer `app`
-and launched by `run()`.
+The Typer `app` lives in `src/dantofa/cli/main.py`, launched by `run()`.
 
 It ships two console entry points (`[project.scripts]`), both pointing at
 `dantofa.cli.main:run`:
@@ -19,21 +18,45 @@ It ships two console entry points (`[project.scripts]`), both pointing at
 
 ## Layout
 
-- `src/dantofa/cli/` — package code. **`dantofa` is a PEP 420 implicit
-  namespace package**: it has *no* `__init__.py`. Do not add one. `cli/` is a
-  regular package (`__init__.py` present).
-- `tests/` — pytest suite using Typer's `CliRunner`.
+- `src/dantofa/cli/` — **presentation layer**: the Typer app and commands only.
+- `src/dantofa/core/` — **application logic**: framework-free modules, one per
+  concern (e.g. `greeting.py`, `meta.py`). No `typer` import here.
+- **PEP 420 throughout: there are no `__init__.py` files anywhere.** `dantofa`
+  and every subpackage (`cli/`, `core/`) are implicit namespace packages. Do
+  not add an `__init__.py` — keep new subpackages namespace-style too.
+- `tests/` — pytest suite: `test_main.py` exercises the CLI via Typer's
+  `CliRunner`; `test_core.py` unit-tests the logic directly.
 - Build backend is `hatchling`; the wheel is built from `src/dantofa`.
+
+## Architecture: thin command layer (important)
+
+**Typer commands and subcommands MUST NOT implement application logic.** A
+command/callback only: declares options/arguments, calls a function from a
+`dantofa.core` module, and renders the result (`typer.echo`, exit codes). All
+real work — computation, I/O, validation, external calls — lives in
+`dantofa.core`, which never imports `typer` or anything CLI-specific.
+
+Why: the logic stays unit-testable without the CLI, and the CLI is a swappable
+adapter (a future API/TUI could reuse the same core). When adding a feature,
+write the logic as a `core` function first, then add a thin command that calls
+it. If a command body contains anything beyond delegation and rendering, it is
+in the wrong layer.
+
+This is **enforced**, not just convention: `import-linter` (config in
+`[tool.importlinter]`, run as `lint-imports` inside `just lint`) has a forbidden
+contract that fails CI if anything under `dantofa.core` imports `dantofa.cli`,
+`typer`, or `click`.
 
 ## The two-tier tooling rule (important)
 
 Dependencies are split by purpose, and new tools must follow the same split:
 
 - **Generic, language-agnostic dev tools live in devbox** (`devbox.json`) —
-  e.g. `uv`, `just`, `actionlint`, `yamllint`. These are pinned via
-  `devbox.lock` and are what CI uses too, so versions match local dev exactly.
+  e.g. `uv`, `just`, `actionlint`, `yamllint`, `shellcheck`, `gh`, `ratchet`.
+  These are pinned via `devbox.lock` and are what CI uses too, so versions
+  match local dev exactly.
 - **Python project tools go through uv** as dev dependencies
-  (`[dependency-groups].dev` in `pyproject.toml`) — e.g. `ruff`, `ty`,
+  (`[dependency-groups].dev` in `pyproject.toml`) — e.g. `ruff`, `basedpyright`,
   `skylos`, `pytest`, `pre-commit`. Add them with `uv add --dev <tool>`, never
   by hand-editing the dependency list.
 
@@ -51,7 +74,11 @@ duplicate these commands elsewhere (CI and pre-commit both delegate to them):
 
 - `just run [args]` — run the CLI.
 - `just test [args]` — run pytest.
-- `just lint` — `ruff check` + `ty check` + `actionlint` + `yamllint`.
+- `just build` — build the sdist + wheel (`uv build`) into `dist/`. The `build`
+  workflow runs this on CI and smoke-tests the wheel via `uvx`.
+- `just lint` — `ruff check` + `basedpyright` + `actionlint` + `yamllint` +
+  `shellcheck` (the latter run on this justfile's shebang recipes; line recipes
+  and any with `just` interpolations are skipped as they aren't standalone shell).
 - `just format [args]` — `ruff format`.
 - `just sast` — skylos security scan (`--danger --secrets --sca`).
 
@@ -60,9 +87,12 @@ CI and pre-commit pick it up automatically.
 
 ## Conventions & constraints
 
-- **Type checking is `ty`** (Astral), not mypy/pyright. Tools that assume
-  mypy/pyright config (e.g. skylos `--quality`) will report false gaps — don't
-  add config to satisfy them.
+- **Type checking is `basedpyright`** (the single type checker, in `just lint`
+  and as the neovim LSP — same `[tool.basedpyright]` config drives both, so
+  IDE and CI agree). Do not re-add `ty` or mypy; running two checkers means
+  maintaining two configs and being held to their union. `reportUnusedParameter`
+  stays on — mark intentionally-unused params with a `_` prefix (e.g. Typer's
+  `_version` callback param) rather than disabling the rule.
 - **`just sast` is security-scoped**, not a code-quality grab-bag. Keep it on
   `--danger --secrets --sca`; do not add skylos `--all`/`--quality`, which emits
   noisy repo-policy nags unrelated to the source.
