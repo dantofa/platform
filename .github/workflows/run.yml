@@ -1,5 +1,5 @@
 ---
-name: build
+name: run
 on:
   push:
     branches: [main, master]
@@ -12,7 +12,7 @@ env:
   FORCE_COLOR: ""
   NO_COLOR: "1"
 jobs:
-  build:
+  run:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -24,13 +24,13 @@ jobs:
           fetch-depth: 0 # Required so hatch-vcs can derive the version.
           persist-credentials: false
 
-      - name: Install devbox
-        uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # ratchet:jetify-com/devbox-install-action@v0.15.0
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
 
-      - name: Build
-        run: devbox run -- just build
-
-      - name: Run build artifact
-        run: devbox run -- bash -c 'uvx --from dist/*.whl dantofa.cli --version'
+      - name: Run via uvx from GitHub (PR head)
+        env:
+          REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: devbox run -- uvx --refresh --from "git+https://github.com/${REPO}.git@${REF}" dantofa.cli --version
