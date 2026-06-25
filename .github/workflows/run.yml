@@ -33,4 +33,4 @@ jobs:
         env:
           REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           REF: ${{ github.head_ref || github.ref_name }}
-        run: devbox run -- uvx --refresh --from "git+https://github.com/${REPO}.git@${REF}" dantofa.cli --version
+        run: uvx --refresh --from "git+https://github.com/${REPO}.git@${REF}" dantofa.cli --version
