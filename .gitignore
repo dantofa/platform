@@ -6,5 +6,11 @@
 .import_linter_cache/
 .python-version
 
+# coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 dist/
 **/*.pyc

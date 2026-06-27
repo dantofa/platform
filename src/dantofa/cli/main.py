@@ -1,6 +1,6 @@
 import typer
 
-from dantofa.core import greeting, meta
+from dantofa.core import meta
 
 app = typer.Typer(help="dantofa command line utility.")
 
@@ -12,9 +12,8 @@ def _version_callback(value: bool) -> None:
     raise typer.Exit
 
 
-@app.command()
-def hello(
-    name: str = "world",
+@app.callback()
+def main(
     _: bool = typer.Option(
         False,
         "--version",
@@ -23,8 +22,7 @@ def hello(
         help="Show the version and exit.",
     ),
 ) -> None:
-    """Say hello."""
-    typer.echo(greeting.greet(name))
+    """dantofa command line utility."""
 
 
 def run() -> None:

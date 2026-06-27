@@ -1,10 +1,6 @@
 from importlib.metadata import version
 
-from dantofa.core import greeting, meta
-
-
-def test_greet():
-    assert greeting.greet("dantofa") == "Hello, dantofa!"
+from dantofa.core import meta
 
 
 def test_resolve_version_matches_metadata():
