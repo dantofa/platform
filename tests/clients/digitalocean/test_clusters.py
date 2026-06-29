@@ -81,3 +81,29 @@ def test_create_update_delete_delegate():
         body={"name": "c2"},
     )
     fake.kubernetes.delete_cluster.assert_called_once_with(cluster_id="1")
+
+
+def test_get_kubeconfig_returns_text():
+    with patch("pydo.Client", return_value=MagicMock()):
+        client = adapter.ClusterClient(token="t")
+    response = MagicMock()
+    response.is_success = True
+    response.text = "apiVersion: v1\n"
+    with patch("httpx.get", return_value=response) as http_get:
+        assert client.get_kubeconfig("cid") == "apiVersion: v1\n"
+    assert http_get.call_args.args[0].endswith("/v2/kubernetes/clusters/cid/kubeconfig")
+    assert http_get.call_args.kwargs["headers"]["Authorization"] == "Bearer t"
+
+
+def test_get_kubeconfig_error_raises():
+    with patch("pydo.Client", return_value=MagicMock()):
+        client = adapter.ClusterClient(token="t")
+    response = MagicMock()
+    response.is_success = False
+    response.json.return_value = {"id": "not_found", "message": "nope"}
+    with (
+        patch("httpx.get", return_value=response),
+        pytest.raises(DigitalOceanApiError) as excinfo,
+    ):
+        _ = client.get_kubeconfig("cid")
+    assert excinfo.value.payload == {"id": "not_found", "message": "nope"}

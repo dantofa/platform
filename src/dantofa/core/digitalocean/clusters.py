@@ -27,6 +27,7 @@ class SupportsClusterApi(Protocol):
         body: Mapping[str, object],
     ) -> dict[str, object]: ...
     def delete(self, cluster_id: str) -> None: ...
+    def get_kubeconfig(self, cluster_id: str) -> str: ...
 
 
 class ClusterNotFoundError(LookupError):
@@ -140,6 +141,14 @@ def update_cluster(
         raise ClusterNotFoundError(name)
     payload: dict[str, object] = {"name": name, **body}
     return client.update(str(existing["id"]), payload)
+
+
+def get_kubeconfig(client: SupportsClusterApi, name: str) -> str:
+    """Return the kubeconfig for the named cluster."""
+    existing = _resolve(client.list(), name)
+    if existing is None:
+        raise ClusterNotFoundError(name)
+    return client.get_kubeconfig(str(existing["id"]))
 
 
 def delete_cluster(client: SupportsClusterApi, name: str) -> str | None:

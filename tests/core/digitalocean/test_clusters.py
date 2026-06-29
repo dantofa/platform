@@ -17,9 +17,14 @@ class FakeClusterApi:
         self.created: dict[str, object] | None = None
         self.updated: tuple[str, dict[str, object]] | None = None
         self.deleted: str | None = None
+        self.kubeconfig_for: str | None = None
 
     def list(self) -> list[dict[str, object]]:
         return list(self.clusters)
+
+    def get_kubeconfig(self, cluster_id: str) -> str:
+        self.kubeconfig_for = cluster_id
+        return f"kubeconfig-for-{cluster_id}"
 
     def create(self, body: Mapping[str, object]) -> dict[str, object]:
         self.created = dict(body)
@@ -140,6 +145,18 @@ def test_delete_absent_is_noop():
     client = FakeClusterApi([{"id": "abc", "name": "c1"}])
     assert core.delete_cluster(client, "does-not-exist") is None
     assert client.deleted is None
+
+
+def test_get_kubeconfig_resolves_id():
+    client = FakeClusterApi([{"id": "abc", "name": "c1"}])
+    assert core.get_kubeconfig(client, "c1") == "kubeconfig-for-abc"
+    assert client.kubeconfig_for == "abc"
+
+
+def test_get_kubeconfig_missing_raises():
+    client = FakeClusterApi([])
+    with pytest.raises(core.ClusterNotFoundError):
+        _ = core.get_kubeconfig(client, "nope")
 
 
 def test_list_passthrough():

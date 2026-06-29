@@ -23,6 +23,10 @@ TOKEN_ENV = "DIGITALOCEAN_ACCESS_TOKEN"
 # DigitalOcean caps per_page at 200; request the max to minimise round-trips.
 _PER_PAGE = 200
 
+# pydo's generated get_kubeconfig parses the response as JSON, which fails on the
+# YAML kubeconfig, so that one endpoint is called directly against the REST API.
+_API_BASE = "https://api.digitalocean.com"
+
 
 def _resolve_token(token: str | None) -> str:
     resolved = token or os.environ.get(TOKEN_ENV)
@@ -55,7 +59,8 @@ class ClusterClient:
     def __init__(self, token: str | None = None) -> None:
         from pydo import Client  # noqa: PLC0415 — lazy: avoid eager azure-core import
 
-        self._client = Client(token=_resolve_token(token))
+        self._token = _resolve_token(token)
+        self._client = Client(token=self._token)
 
     def list(self) -> list[dict[str, Any]]:
         """Return every cluster, following pagination links."""
@@ -108,3 +113,23 @@ class ClusterClient:
             _ = self._client.kubernetes.delete_cluster(cluster_id=cluster_id)
         except HttpResponseError as exc:
             raise _api_error(exc) from exc
+
+    def get_kubeconfig(self, cluster_id: str) -> str:
+        """Return the cluster's kubeconfig YAML (fetched directly; see _API_BASE)."""
+        import httpx  # noqa: PLC0415 — lazy import to keep CLI startup fast
+
+        # SKY-D216 false positive: the host is the fixed _API_BASE constant; only
+        # the path carries cluster_id (a DigitalOcean-issued id), so there is no
+        # attacker-controlled URL/host here.
+        response = httpx.get(  # skylos: ignore[SKY-D216]
+            f"{_API_BASE}/v2/kubernetes/clusters/{cluster_id}/kubeconfig",
+            headers={"Authorization": f"Bearer {self._token}"},
+            timeout=30.0,
+        )
+        if response.is_success:
+            return response.text
+        try:
+            payload: object = response.json()
+        except Exception:  # noqa: BLE001 - non-JSON error body; fall back to text
+            payload = response.text
+        raise DigitalOceanApiError(payload)

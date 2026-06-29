@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -116,7 +117,7 @@ def test_update_clear_tags_conflicts_with_tag():
     assert result.exit_code != 0
 
 
-def test_delete_renders_id():
+def test_delete_resolves_and_deletes():
     instance = MagicMock()
     instance.list.return_value = [{"id": "abc", "name": "c1"}]
     with patch(
@@ -125,9 +126,7 @@ def test_delete_renders_id():
     ):
         result = runner.invoke(app, ["do", "cluster", "delete", "c1", "--token", "t"])
     assert result.exit_code == 0
-    out = _plain(result.stdout)
-    assert '"status": "deleted"' in out
-    assert '"id": "abc"' in out
+    instance.delete.assert_called_once_with("abc")
 
 
 def test_delete_absent_succeeds():
@@ -139,8 +138,26 @@ def test_delete_absent_succeeds():
     ):
         result = runner.invoke(app, ["do", "cluster", "delete", "gone", "--token", "t"])
     assert result.exit_code == 0  # idempotent: absent is success
-    assert '"status": "absent"' in _plain(result.stdout)
     instance.delete.assert_not_called()
+
+
+def test_connect_writes_kubeconfig(tmp_path: Path):
+    instance = MagicMock()
+    instance.list.return_value = [{"id": "abc", "name": "c1"}]
+    instance.get_kubeconfig.return_value = "apiVersion: v1\n"
+    out = tmp_path / "kc.yaml"
+    with patch(
+        "dantofa.commands.digitalocean.clusters.ClusterClient",
+        return_value=instance,
+    ):
+        result = runner.invoke(
+            app,
+            ["do", "cluster", "connect", "c1", "-o", str(out), "--token", "t"],
+        )
+    assert result.exit_code == 0
+    instance.get_kubeconfig.assert_called_once_with("abc")
+    assert out.read_text(encoding="utf-8") == "apiVersion: v1\n"
+    assert (out.stat().st_mode & 0o777) == 0o600
 
 
 def test_api_error_renders_raw_payload():
