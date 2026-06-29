@@ -1,16 +1,20 @@
 ---
-name: preview
+name: destroy
+# Safety net: guarantee the per-PR preview cluster is gone once the PR is closed
+# or merged (the preview workflow only tears down on success, so a failed run can
+# leave a cluster behind). `closed` fires for both merge and plain close.
 on:
   pull_request:
+    types: [closed]
 permissions: {}
 env:
   FORCE_COLOR: ""
   NO_COLOR: "1"
   CLUSTER_NAME: saas-preview-${{ github.event.pull_request.number }}
 jobs:
-  preview:
+  teardown:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     environment: preview
     permissions:
       contents: read
@@ -25,18 +29,7 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Create preview cluster
-        env:
-          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
-        run: devbox run -- dctl digitalocean cluster create --name "$CLUSTER_NAME"
-
-      # TODO: payload testing goes here, between create and teardown:
-      #   - wait for the cluster to reach "running" and fetch its kubeconfig
-      #   - deploy the payload
-      #   - run the cluster tests against it
-
       - name: Destroy preview cluster
-        if: success()
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: devbox run -- dctl digitalocean cluster delete "$CLUSTER_NAME"

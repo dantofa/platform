@@ -142,11 +142,15 @@ def update_cluster(
     return client.update(str(existing["id"]), payload)
 
 
-def delete_cluster(client: SupportsClusterApi, name: str) -> str:
-    """Delete the named cluster. Returns the resolved cluster id."""
+def delete_cluster(client: SupportsClusterApi, name: str) -> str | None:
+    """Delete the named cluster. Idempotent: a missing cluster is a no-op.
+
+    Returns the resolved cluster id when one was deleted, or ``None`` if no
+    cluster by that name exists.
+    """
     match = _resolve(client.list(), name)
     if match is None:
-        raise ClusterNotFoundError(name)
+        return None
     cluster_id = str(match["id"])
     client.delete(cluster_id)  # skylos: ignore[SKY-D216]
     return cluster_id

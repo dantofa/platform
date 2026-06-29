@@ -149,10 +149,9 @@ def delete(
     name: Annotated[str, typer.Argument(help="Cluster name.")],
     token: Token = None,
 ) -> None:
-    """Delete a cluster by name or id."""
+    """Delete a cluster by name. Idempotent: succeeds if it is already absent."""
     try:
-        cluster_id = core.delete_cluster(ClusterClient(token=token), name)
+        _ = core.delete_cluster(ClusterClient(token=token), name)
     except _EXPECTED_ERRORS as exc:
         echo_error(exc)
         raise typer.Exit(1) from exc
-    echo_json({"deleted": cluster_id})

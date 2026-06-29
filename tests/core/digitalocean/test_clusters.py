@@ -135,11 +135,11 @@ def test_delete_by_name_resolves_id():
     assert client.deleted == "abc"
 
 
-def test_delete_unknown_name_raises():
-    # an id is not a valid identifier — name only.
+def test_delete_absent_is_noop():
+    # idempotent: deleting a name that doesn't exist returns None, no error.
     client = FakeClusterApi([{"id": "abc", "name": "c1"}])
-    with pytest.raises(core.ClusterNotFoundError):
-        _ = core.delete_cluster(client, "abc")
+    assert core.delete_cluster(client, "does-not-exist") is None
+    assert client.deleted is None
 
 
 def test_list_passthrough():

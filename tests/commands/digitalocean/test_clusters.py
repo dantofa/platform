@@ -125,7 +125,22 @@ def test_delete_renders_id():
     ):
         result = runner.invoke(app, ["do", "cluster", "delete", "c1", "--token", "t"])
     assert result.exit_code == 0
-    assert '"deleted": "abc"' in _plain(result.stdout)
+    out = _plain(result.stdout)
+    assert '"status": "deleted"' in out
+    assert '"id": "abc"' in out
+
+
+def test_delete_absent_succeeds():
+    instance = MagicMock()
+    instance.list.return_value = []  # nothing to delete
+    with patch(
+        "dantofa.commands.digitalocean.clusters.ClusterClient",
+        return_value=instance,
+    ):
+        result = runner.invoke(app, ["do", "cluster", "delete", "gone", "--token", "t"])
+    assert result.exit_code == 0  # idempotent: absent is success
+    assert '"status": "absent"' in _plain(result.stdout)
+    instance.delete.assert_not_called()
 
 
 def test_api_error_renders_raw_payload():
