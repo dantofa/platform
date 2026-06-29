@@ -16,6 +16,8 @@ from typing import cast
 
 import typer
 
+from dantofa.clients.digitalocean.errors import DigitalOceanApiError
+
 
 def serialize(value: object) -> object:
     """Recursively turn dataclasses (and lists of them) into JSON-ready structures."""
@@ -26,9 +28,24 @@ def serialize(value: object) -> object:
     return value
 
 
+def echo_json(value: object) -> None:
+    """Render a value as pretty JSON on stdout.
+
+    ``default=str`` covers non-JSON-native values that SDKs return (e.g. the
+    ``datetime`` in boto3's bucket listings).
+    """
+    typer.echo(json.dumps(serialize(value), indent=2, default=str))
+
+
 def echo_error(exc: Exception) -> None:
-    """Render an exception as a ``{"code", "message"}`` JSON object on stderr."""
-    typer.echo(
-        json.dumps({"code": type(exc).__name__, "message": str(exc)}, indent=2),
-        err=True,
+    """Render an exception as JSON on stderr.
+
+    A :class:`DigitalOceanApiError` surfaces the provider's raw error payload
+    verbatim; any other exception renders as a ``{"code", "message"}`` object.
+    """
+    payload = (
+        exc.payload
+        if isinstance(exc, DigitalOceanApiError)
+        else {"code": type(exc).__name__, "message": str(exc)}
     )
+    typer.echo(json.dumps(payload, indent=2, default=str), err=True)

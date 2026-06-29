@@ -18,22 +18,16 @@ def _plain(text: str) -> str:
 def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert version("dantofa-cli") in _plain(result.stdout)
+    assert version("dantofa-saas") in _plain(result.stdout)
 
 
-def test_hello_default():
-    result = runner.invoke(app)
-    assert result.exit_code == 0
-    assert "Hello, world!" in _plain(result.stdout)
-
-
-def test_hello_with_name():
-    result = runner.invoke(app, ["--name", "dantofa"])
-    assert result.exit_code == 0
-    assert "Hello, dantofa!" in _plain(result.stdout)
-
-
-def test_help():
+def test_help_lists_do_group():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "--name" in _plain(result.stdout)
+    assert "do" in _plain(result.stdout)
+
+
+def test_digitalocean_alias_mirrors_do():
+    result = runner.invoke(app, ["digitalocean", "cluster", "--help"])
+    assert result.exit_code == 0
+    assert "list" in _plain(result.stdout)

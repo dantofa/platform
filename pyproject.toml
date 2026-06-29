@@ -1,17 +1,18 @@
 [project]
-name = "dantofa-cli"
+name = "dantofa-saas"
 dynamic = ["version"]
-description = "Daantofa cli utility"
+description = "Dantofa saas application"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
   "typer>=0.16.0",
   "httpx >= 0.27",
-  "pydantic>=2.4.0",
   "boto3>=1.35",
   "botocore>=1.35",
   "zitadel-client",
   "kubernetes-asyncio>=31.1.1",
+  "pydo>=0.37.0",
+  "azure-core>=1.41.0",
 ]
 
 [project.scripts]
@@ -31,7 +32,11 @@ packages = ["src/dantofa"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov --cov-report=term-missing"
+# importlib import-mode + namespace awareness so the PEP 420 test tree (no
+# __init__.py) can mirror the source layout, including same-named files like
+# test_clusters.py under tests/{clients,core,commands}/digitalocean/.
+addopts = "--cov --cov-report=term-missing --import-mode=importlib"
+consider_namespace_packages = true
 # Tests opt in per-function with @pytest.mark.asyncio (strict is the default).
 asyncio_mode = "strict"
 

@@ -7,14 +7,13 @@
     "yamllint@latest",
     "gh@latest",
     "ratchet@latest",
-    "shellcheck@latest"
+    "shellcheck@latest",
+    "bitwarden-cli@latest"
   ],
   "aliases": {
-    "dctl": "uv run -- dctl"
+    "dctl": "bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea -- uv run -- dctl"
   },
   "shell": {
-    "init_hook": [
-      "uv run -- pre-commit install -t pre-commit -t pre-push"
-    ]
+    "init_hook": ["uv run -- pre-commit install -t pre-commit -t pre-push"]
   }
 }

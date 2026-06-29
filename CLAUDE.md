@@ -5,16 +5,17 @@ tooling, or CI.
 
 ## What this is
 
-`dantofa-cli` is a Python CLI built with [Typer](https://typer.tiangolo.com/).
+`dantofa-saas` is a Python CLI built with [Typer](https://typer.tiangolo.com/).
 The Typer `app` lives in `src/dantofa/cli/main.py`, launched by `run()`.
 
 It ships two console entry points (`[project.scripts]`), both pointing at
 `dantofa.cli.main:run`:
 
 - `dctl` — short, ergonomic name for installed use.
-- `dantofa.cli` — so `uvx dantofa.cli` / `pipx run dantofa.cli` resolve without
-  `--from` (the package name normalizes to `dantofa-cli`, and the executable is
-  named `dantofa.cli`).
+- `dantofa.cli` — alternate executable name. Since the distribution is named
+  `dantofa-saas`, `uvx` / `pipx run` need `--from dantofa-saas` (e.g.
+  `uvx --from dantofa-saas dantofa.cli`); the executable no longer shares the
+  distribution name.
 
 ## Layout
 
@@ -46,6 +47,20 @@ This is **enforced**, not just convention: `import-linter` (config in
 `[tool.importlinter]`, run as `lint-imports` inside `just lint`) has a forbidden
 contract that fails CI if anything under `dantofa.core` imports `dantofa.cli`,
 `typer`, or `click`.
+
+### Opinionated core builders
+
+The DigitalOcean cluster body builders in `dantofa.core.digitalocean.clusters`
+(`build_node_pool`, `build_create_body`, `build_update_body`) are deliberately
+**opinionated** — they are *not* neutral DO API wrappers. They bake fixed product
+invariants into every payload (a single autoscaling node pool; auto-upgrade and
+surge-upgrade always enabled) rather than exposing them as caller choices, and HA
+is enable-only (never emitted as `false`). This keeps the invariants in one place
+and makes them impossible to bypass from any caller, at the cost of generality (a
+future API/TUI reusing core inherits these defaults). Do not "tidy" these into
+pass-through builders: if a caller ever legitimately needs to *not* enforce an
+invariant, add a parameter deliberately rather than assuming the builder is
+neutral.
 
 ## The two-tier tooling rule (important)
 
@@ -137,7 +152,7 @@ hardcoded version back; the tag is the single source of truth.
   workflow verifies it with `git merge-base --is-ancestor` and refuses to
   release otherwise. Tag clean `master` commits only.
 - `dctl --version` reports the installed package version via
-  `importlib.metadata.version("dantofa-cli")` — keep that distribution name in
+  `importlib.metadata.version("dantofa-saas")` — keep that distribution name in
   sync if the project is ever renamed.
 - CI checks out with `fetch-depth: 0` so tags/history are available to
   hatch-vcs. `uv.lock` records the local package as dynamic, so `uv sync

@@ -6,13 +6,26 @@ on:
   pull_request:
 permissions: {}
 env:
-  # Force plain output in CI logs; rich/Typer otherwise colorizes (e.g. under
-  # devbox's pseudo-terminal), which is noise when troubleshooting. FORCE_COLOR
-  # must be empty — any non-empty value, including "0", still forces color.
   FORCE_COLOR: ""
-  NO_COLOR: "1"
 jobs:
-  run:
+  uvx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # ratchet:astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Run via uvx from GitHub PR head
+        env:
+          REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: uvx --refresh --from "git+https://github.com/${REPO}.git@${REF}" dantofa.cli --version
+
+  devbox:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -21,16 +34,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
         with:
-          fetch-depth: 0 # Required so hatch-vcs can derive the version.
           persist-credentials: false
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # ratchet:astral-sh/setup-uv@v8.1.0
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # ratchet:jetify-com/devbox-install-action@v0.15.0
         with:
           enable-cache: true
 
-      - name: Run via uvx from GitHub (PR head)
-        env:
-          REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          REF: ${{ github.head_ref || github.ref_name }}
-        run: uvx --refresh --from "git+https://github.com/${REPO}.git@${REF}" dantofa.cli --version
+      - name: Run via local devbox run
+        run: devbox run -- dctl

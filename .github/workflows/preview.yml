@@ -1,12 +1,16 @@
 ---
-name: sast
+name: preview
 on:
   push:
     branches: [main, master]
   pull_request:
 permissions: {}
+env:
+  FORCE_COLOR: ""
+  CLUSTER_NAME: "saas-preview-"
+  CLUSTER_REGION: "nyc3"
 jobs:
-  sast:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -22,8 +26,5 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Sync dependencies
-        run: devbox run -- uv sync --locked
-
-      - name: Lint
-        run: devbox run -- just sast
+      - name: Create preview cluster
+        run: devbox run -- dctl digitalocean cluster create --name
