@@ -1,8 +1,15 @@
 import typer
 
-from dantofa.core import greeting, meta
+from dantofa.commands.digitalocean.app import do_app
+from dantofa.commands.local.app import local_app
+from dantofa.core import meta
 
 app = typer.Typer(help="dantofa command line utility.")
+# Registered under both names: `do` is short/ergonomic, `digitalocean` is the
+# long alias for shells/CI where `do` is a reserved word (shellcheck SC1010).
+app.add_typer(do_app, name="do")
+app.add_typer(do_app, name="digitalocean", hidden=True)
+app.add_typer(local_app, name="local")
 
 
 def _version_callback(value: bool) -> None:
@@ -12,9 +19,8 @@ def _version_callback(value: bool) -> None:
     raise typer.Exit
 
 
-@app.command()
-def hello(
-    name: str = "world",
+@app.callback()
+def main(
     _: bool = typer.Option(
         False,
         "--version",
@@ -23,8 +29,7 @@ def hello(
         help="Show the version and exit.",
     ),
 ) -> None:
-    """Say hello."""
-    typer.echo(greeting.greet(name))
+    """dantofa command line utility."""
 
 
 def run() -> None:

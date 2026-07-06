@@ -1,4 +1,4 @@
-# dantofa-cli
+# dantofa-saas
 
 A small command-line utility built with [Typer](https://typer.tiangolo.com/).
 

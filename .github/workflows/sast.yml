@@ -15,7 +15,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
         with:
-          fetch-depth: 0 # Required so hatch-vcs can derive the version.
           persist-credentials: false
 
       - name: Install devbox

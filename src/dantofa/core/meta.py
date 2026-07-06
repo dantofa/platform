@@ -2,7 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-_DISTRIBUTION = "dantofa-cli"
+_DISTRIBUTION = "dantofa-saas"
 
 
 def resolve_version() -> str:
