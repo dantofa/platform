@@ -41,5 +41,8 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Sync dependencies
+        run: devbox run -- uv sync --locked
+
       - name: Run via local devbox run
         run: devbox run -- dctl
