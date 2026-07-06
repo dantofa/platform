@@ -4,9 +4,9 @@
 .pytest_cache/
 .ruff_cache/
 .import_linter_cache/
+.kubeconfig
 .python-version
 
-# coverage artifacts
 .coverage
 .coverage.*
 htmlcov/

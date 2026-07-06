@@ -83,6 +83,17 @@ def test_create_update_delete_delegate():
     fake.kubernetes.delete_cluster.assert_called_once_with(cluster_id="1")
 
 
+def test_get_returns_unwrapped_cluster():
+    fake = MagicMock()
+    fake.kubernetes.get_cluster.return_value = {
+        "kubernetes_cluster": {"id": "1", "status": {"state": "running"}},
+    }
+    with patch("pydo.Client", return_value=fake):
+        client = adapter.ClusterClient(token="t")
+        assert client.get("1") == {"id": "1", "status": {"state": "running"}}
+    fake.kubernetes.get_cluster.assert_called_once_with(cluster_id="1")
+
+
 def test_get_kubeconfig_returns_text():
     with patch("pydo.Client", return_value=MagicMock()):
         client = adapter.ClusterClient(token="t")

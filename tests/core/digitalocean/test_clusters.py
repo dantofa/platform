@@ -12,15 +12,25 @@ from dantofa.core.digitalocean import clusters as core
 class FakeClusterApi:
     """In-memory stand-in for the cluster client adapter."""
 
-    def __init__(self, clusters: list[dict[str, object]] | None = None) -> None:
+    def __init__(
+        self,
+        clusters: list[dict[str, object]] | None = None,
+        states: list[str] | None = None,
+    ) -> None:
         self.clusters: list[dict[str, object]] = clusters or []
         self.created: dict[str, object] | None = None
         self.updated: tuple[str, dict[str, object]] | None = None
         self.deleted: str | None = None
         self.kubeconfig_for: str | None = None
+        # Each get() pops the next state; defaults to "running" when exhausted.
+        self._states: list[str] = list(states or [])
 
     def list(self) -> list[dict[str, object]]:
         return list(self.clusters)
+
+    def get(self, cluster_id: str) -> dict[str, object]:
+        state = self._states.pop(0) if self._states else "running"
+        return {"id": cluster_id, "status": {"state": state}}
 
     def get_kubeconfig(self, cluster_id: str) -> str:
         self.kubeconfig_for = cluster_id
@@ -157,6 +167,47 @@ def test_get_kubeconfig_missing_raises():
     client = FakeClusterApi([])
     with pytest.raises(core.ClusterNotFoundError):
         _ = core.get_kubeconfig(client, "nope")
+
+
+def test_wait_for_running_polls_until_running():
+    client = FakeClusterApi(
+        [{"id": "abc", "name": "c1"}],
+        states=["provisioning", "provisioning", "running"],
+    )
+    slept: list[float] = []
+    result = core.wait_for_running(
+        client, "c1", interval=5.0, sleep=slept.append, monotonic=lambda: 0.0
+    )
+    assert result["status"] == {"state": "running"}
+    assert slept == [5.0, 5.0]  # slept once per non-running poll
+
+
+def test_wait_for_running_fails_on_error_state():
+    client = FakeClusterApi([{"id": "abc", "name": "c1"}], states=["error"])
+    with pytest.raises(core.ClusterNotReadyError):
+        _ = core.wait_for_running(client, "c1", sleep=lambda _: None)
+
+
+def test_wait_for_running_times_out():
+    client = FakeClusterApi(
+        [{"id": "abc", "name": "c1"}],
+        states=["provisioning", "provisioning"],
+    )
+    ticks = iter([0.0, 0.0, 100.0])  # deadline calc, first check, second check
+    with pytest.raises(core.ClusterNotReadyError):
+        _ = core.wait_for_running(
+            client,
+            "c1",
+            timeout=10.0,
+            sleep=lambda _: None,
+            monotonic=lambda: next(ticks),
+        )
+
+
+def test_wait_for_running_missing_raises():
+    client = FakeClusterApi([])
+    with pytest.raises(core.ClusterNotFoundError):
+        _ = core.wait_for_running(client, "nope", sleep=lambda _: None)
 
 
 def test_list_passthrough():

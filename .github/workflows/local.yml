@@ -1,0 +1,46 @@
+---
+name: local
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+permissions: {}
+env:
+  FORCE_COLOR: ""
+jobs:
+  local:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # ratchet:jetify-com/devbox-install-action@v0.15.0
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: devbox run -- uv sync --locked
+
+      # Docker Engine is preinstalled and running on ubuntu-latest, so kind can
+      # provision a cluster without a services: block. No secrets are needed:
+      # `just run` is `uv run -- dantofa.cli` (not the bws-wrapped dctl alias).
+      - name: Create local cluster
+        run: devbox run -- just run local cluster create
+
+      - name: Verify provisioning
+        run: |
+          devbox run -- just run local cluster list | grep -q '"local"'
+          devbox run -- just run local cluster connect
+          devbox run -- kubectl wait --for=condition=Ready nodes --all --timeout=180s
+          test "$(devbox run -- kubectl get nodes -o name | grep -c 'node/')" -eq 4
+          curl -fsS http://localhost:5001/v2/ > /dev/null
+
+      - name: Delete local cluster
+        if: always()
+        run: devbox run -- just run local cluster delete

@@ -52,6 +52,24 @@ def test_create_defaults_region_and_version():
     assert '"id": "new"' in _plain(result.stdout)
 
 
+def test_create_wait_polls_until_running():
+    instance = MagicMock()
+    instance.create.return_value = {"id": "abc", "name": "c1"}
+    instance.list.return_value = [{"id": "abc", "name": "c1"}]
+    instance.get.return_value = {"id": "abc", "status": {"state": "running"}}
+    with patch(
+        "dantofa.commands.digitalocean.clusters.ClusterClient",
+        return_value=instance,
+    ):
+        result = runner.invoke(
+            app,
+            ["do", "cluster", "create", "--name", "c1", "--wait", "--token", "t"],
+        )
+    assert result.exit_code == 0
+    instance.get.assert_called()  # polled for status
+    assert '"state": "running"' in _plain(result.stdout)
+
+
 def test_create_requires_name():
     result = runner.invoke(app, ["do", "cluster", "create", "--token", "t"])
     assert result.exit_code != 0

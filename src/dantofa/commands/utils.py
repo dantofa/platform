@@ -12,11 +12,26 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+from pathlib import Path
 from typing import cast
 
 import typer
 
 from dantofa.clients.digitalocean.errors import DigitalOceanApiError
+
+
+def write_owner_only(path: Path, content: str) -> None:
+    """Write text to a file created 0600 and refusing to follow a symlink target.
+
+    For credential-bearing outputs (kubeconfigs). SKY-D215 (tainted path) is a
+    false positive: ``path`` is an operator-chosen CLI output, not an
+    attacker-controlled value.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)  # skylos: ignore[SKY-D215]
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        _ = handle.write(content)
 
 
 def serialize(value: object) -> object:

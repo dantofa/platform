@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.3/.schema/devbox.schema.json",
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.5/.schema/devbox.schema.json",
   "packages": [
     "uv@latest",
     "just@latest",
@@ -8,11 +8,17 @@
     "gh@latest",
     "ratchet@latest",
     "shellcheck@latest",
-    "bws@latest"
+    "bws@latest",
+    "kind@latest",
+    "docker@latest",
+    "kubectl@latest",
+    "flux@latest"
   ],
+  "env": {
+    "KUBECONFIG": ".kubeconfig"
+  },
   "aliases": {
     "dctl": "bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea -- uv run -- dctl",
-    "kubectl": "uv run -- dctl kubectl",
     "kg": "kubectl get",
     "kd": "kubectl describe",
     "kl": "kubectl logs",

@@ -114,6 +114,16 @@ class ClusterClient:
         except HttpResponseError as exc:
             raise _api_error(exc) from exc
 
+    def get(self, cluster_id: str) -> dict[str, Any]:
+        """Return a single cluster (includes ``status.state``)."""
+        from azure.core.exceptions import HttpResponseError  # noqa: PLC0415
+
+        try:
+            resp = self._client.kubernetes.get_cluster(cluster_id=cluster_id)
+        except HttpResponseError as exc:
+            raise _api_error(exc) from exc
+        return dict(resp.get("kubernetes_cluster") or {})
+
     def get_kubeconfig(self, cluster_id: str) -> str:
         """Return the cluster's kubeconfig YAML (fetched directly; see _API_BASE)."""
         import httpx  # noqa: PLC0415 — lazy import to keep CLI startup fast

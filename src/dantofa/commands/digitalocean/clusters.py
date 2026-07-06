@@ -6,7 +6,6 @@ Thin presentation layer: parse options, build the client adapter, delegate to
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Annotated
 
@@ -17,7 +16,7 @@ from dantofa.clients.digitalocean.errors import (
     DigitalOceanApiError,
     MissingCredentialsError,
 )
-from dantofa.commands.utils import echo_error, echo_json
+from dantofa.commands.utils import echo_error, echo_json, write_owner_only
 from dantofa.core.digitalocean import clusters as core
 
 cluster_app = typer.Typer(
@@ -31,6 +30,7 @@ _EXPECTED_ERRORS = (
     MissingCredentialsError,
     DigitalOceanApiError,
     core.ClusterNotFoundError,
+    core.ClusterNotReadyError,
 )
 
 Token = Annotated[
@@ -80,14 +80,27 @@ def create(
         list[str],
         typer.Option("--tag", help="A cluster tag; repeatable."),
     ] = [],
+    wait: Annotated[
+        bool,
+        typer.Option(
+            "--wait", help="Wait until the cluster reaches the running state."
+        ),
+    ] = False,
+    wait_timeout: Annotated[
+        float,
+        typer.Option(
+            "--wait-timeout", help="Seconds to wait for running (with --wait)."
+        ),
+    ] = 900.0,
     token: Token = None,
 ) -> None:
     """Create a DOKS cluster.
 
     The node pool is always named "system" with autoscaling enabled, and
     auto-upgrade and surge-upgrade are always on. Only HA, node sizing and tags
-    are configurable.
+    are configurable. With --wait, blocks until the control plane is running.
     """
+    client = ClusterClient(token=token)
     try:
         pool = core.build_node_pool(
             name="system",
@@ -104,7 +117,9 @@ def create(
             tags=list(tag),
             ha=ha,
         )
-        result = core.create_cluster(ClusterClient(token=token), body)
+        result = core.create_cluster(client, body)
+        if wait:
+            result = core.wait_for_running(client, name, timeout=wait_timeout)
     except _EXPECTED_ERRORS as exc:
         echo_error(exc)
         raise typer.Exit(1) from exc
@@ -146,20 +161,6 @@ def update(
     echo_json(result)
 
 
-def _write_kubeconfig(path: Path, content: str) -> None:
-    """Write a kubeconfig owner-only, refusing to follow a symlink at the target.
-
-    The file carries cluster credentials, so it is created 0600 and with
-    ``O_NOFOLLOW`` (addressing skylos SKY-D324). SKY-D215 (tainted path) is a
-    false positive: ``path`` is the operator's own ``--output`` choice, not an
-    attacker-controlled value.
-    """
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
-    fd = os.open(path, flags, 0o600)  # skylos: ignore[SKY-D215]
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        _ = handle.write(content)
-
-
 @cluster_app.command()
 def connect(
     name: Annotated[str, typer.Argument(help="Cluster name.")],
@@ -175,7 +176,7 @@ def connect(
     except _EXPECTED_ERRORS as exc:
         echo_error(exc)
         raise typer.Exit(1) from exc
-    _write_kubeconfig(output, kubeconfig)
+    write_owner_only(output, kubeconfig)
     echo_json({"name": name, "kubeconfig": str(output)})
 
 
