@@ -18,7 +18,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@cd46bde16ab981b0a7b2dce0574509104543276e # ratchet:DeterminateSystems/nix-installer-action@v9
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # ratchet:DeterminateSystems/nix-installer-action@v22
 
       # The uv2nix-built Python closure + wheel + wrapper aren't in cache.nixos.org
       # (they're built from our uv.lock), so cache them in the GitHub Actions cache
@@ -27,7 +27,7 @@ jobs:
       # or flaky for the closure, evaluate a dedicated binary cache — FlakeHub Cache
       # (OIDC, installer-native) or Cachix (public repos get a 5 GB free tier).
       - name: Cache Nix store
-        uses: nix-community/cache-nix-action@135667ec418502fa5a3598af6fb9eb733888ce6a # ratchet:nix-community/cache-nix-action@v6
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # ratchet:nix-community/cache-nix-action@v7
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'uv.lock', '**/*.nix') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
