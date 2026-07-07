@@ -19,6 +19,8 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@cd46bde16ab981b0a7b2dce0574509104543276e # ratchet:DeterminateSystems/nix-installer-action@v9
+        with:
+          determinate: false
 
       # The uv2nix-built Python closure + wheel + wrapper aren't in cache.nixos.org
       # (they're built from our uv.lock), so cache them in the GitHub Actions cache

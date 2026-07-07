@@ -21,6 +21,8 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@cd46bde16ab981b0a7b2dce0574509104543276e # ratchet:DeterminateSystems/nix-installer-action@v9
+        with:
+          determinate: false
 
       # Cache the uv2nix-built closure so `nix run` doesn't cold-build every time
       # (see nix.yml for the binary-cache upgrade TODO).
