@@ -7,10 +7,12 @@ on:
 permissions: {}
 env:
   FORCE_COLOR: ""
+  NO_COLOR: "1"
+  KUBECONFIG: .kubeconfig
 jobs:
   local:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -19,28 +21,39 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install devbox
-        uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # ratchet:jetify-com/devbox-install-action@v0.15.0
-        with:
-          enable-cache: true
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@cd46bde16ab981b0a7b2dce0574509104543276e # ratchet:DeterminateSystems/nix-installer-action@v9
 
-      - name: Sync dependencies
-        run: devbox run -- uv sync --locked
+      # Cache the uv2nix-built closure so `nix run` doesn't cold-build every time
+      # (see nix.yml for the binary-cache upgrade TODO).
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@d8cff2f74b9341e0d90fbf3c0c0212a161ceaef6 # ratchet:nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'uv.lock', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
 
       # Docker Engine is preinstalled and running on ubuntu-latest, so kind can
-      # provision a cluster without a services: block. No secrets are needed:
-      # `just run` is `uv run -- dantofa.cli` (not the bws-wrapped dctl alias).
+      # provision a cluster without a services: block. `nix run .#default` is the
+      # shipped artifact — the wrapped dctl carrying kind/flux/docker in its own
+      # closure — so this exercises exactly what downstream installs.
       - name: Create local cluster
-        run: devbox run -- just run local cluster create
+        run: nix run .#default -- local cluster create
 
+      # kubectl is a verification tool, not part of the package; pull it from
+      # nixpkgs ad hoc rather than the flake closure.
       - name: Verify provisioning
         run: |
-          devbox run -- just run local cluster list | grep -q '"local"'
-          devbox run -- just run local cluster connect
-          devbox run -- kubectl wait --for=condition=Ready nodes --all --timeout=180s
-          test "$(devbox run -- kubectl get nodes -o name | grep -c 'node/')" -eq 4
+          nix run .#default -- local cluster list | grep -q '"local"'
+          nix run .#default -- local cluster connect
+          nix shell nixpkgs#kubectl --command kubectl wait --for=condition=Ready nodes --all --timeout=180s
+          count=$(nix shell nixpkgs#kubectl --command kubectl get nodes -o name | grep -c node/)
+          test "$count" -eq 4
           curl -fsS http://localhost:5001/v2/ > /dev/null
 
       - name: Delete local cluster
         if: always()
-        run: devbox run -- just run local cluster delete
+        run: nix run .#default -- local cluster delete

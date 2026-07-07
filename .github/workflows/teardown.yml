@@ -1,14 +1,21 @@
 ---
-name: preview
+name: teardown
+# Safety net: guarantee the per-PR preview cluster is gone once the PR is closed
+# or merged (the preview workflow only tears down on success, so a failed run can
+# leave a cluster behind). `closed` fires for both merge and plain close.
 on:
   pull_request:
+    types: [closed]
 permissions: {}
 env:
   FORCE_COLOR: ""
+  NO_COLOR: "1"
   CLUSTER_NAME: saas-preview-${{ github.event.pull_request.number }}
 jobs:
-  preview:
+  teardown:
     runs-on: ubuntu-latest
+    # 30m (not 10m): this is a paid-cluster safety net, so a cold cache miss on the
+    # `nix run` build must not time out and leave a cluster billing.
     timeout-minutes: 30
     environment: preview
     permissions:
@@ -22,8 +29,6 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@cd46bde16ab981b0a7b2dce0574509104543276e # ratchet:DeterminateSystems/nix-installer-action@v9
 
-      # Cache the uv2nix-built closure so `nix run` doesn't cold-build every time
-      # (see nix.yml for the binary-cache upgrade TODO).
       - name: Cache Nix store
         uses: nix-community/cache-nix-action@d8cff2f74b9341e0d90fbf3c0c0212a161ceaef6 # ratchet:nix-community/cache-nix-action@v6
         with:
@@ -34,29 +39,9 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
+      # bws (from nixpkgs, orthogonal to the package) injects the DigitalOcean
+      # token, then runs the shipped dctl to guarantee teardown.
       - name: Destroy preview cluster
-        env:
-          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
-        run: >-
-          nix shell nixpkgs#bws --command
-          bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
-          nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
-
-      - name: Create preview cluster
-        env:
-          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
-        run: >-
-          nix shell nixpkgs#bws --command
-          bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
-          nix run .#default -- digitalocean cluster create --name "$CLUSTER_NAME" --wait
-
-      # TODO: payload testing goes here, between create and teardown:
-      #   - wait for the cluster to reach "running" and fetch its kubeconfig
-      #   - deploy the payload
-      #   - run the cluster tests against it
-
-      - name: Destroy preview cluster
-        if: success()
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
