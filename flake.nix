@@ -35,20 +35,33 @@
       inherit (nixpkgs) lib;
 
       # hatch-vcs derives the version from git, but a sandboxed Nix build has no
-      # .git — so we feed it one. Downstream pins a release tag; the local segment
-      # records the flake rev. (A follow-up can wire this to the actual git tag.)
-      version = "0.0.0+" + (self.shortRev or self.dirtyShortRev or "dev");
+      # .git — so we feed it a version derived purely from the flake source: the
+      # commit date as the PEP 440 dev segment, plus the short rev as the local
+      # segment. Downstream tracks this flake by rev (e.g. a devbox input on
+      # `master` that `devbox update` locks to the latest SHA), so `dctl --version`
+      # names the exact commit they run — and changes when they update. There are
+      # no release tags in this model; a flake cannot read git tags anyway.
+      version =
+        "0.0.0.dev"
+        + (builtins.substring 0 8 (self.lastModifiedDate or "00000000"))
+        + "+g"
+        + (self.shortRev or self.dirtyShortRev or "dev");
 
       # uv.lock + pyproject.toml are the single source of truth for the dependency
       # set — the very same lockfile the uv/pip channel installs from.
       workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./.; };
       overlay = workspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
 
-      # Give hatch-vcs its version for the root distribution only (not deps).
+      # Give hatch-vcs its version for the root distribution only (not deps). The
+      # override is scoped to this one derivation, so the *unsuffixed*
+      # SETUPTOOLS_SCM_PRETEND_VERSION is safe (nothing else builds here). The
+      # dist-suffixed SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DANTOFA_SAAS is silently
+      # ignored under this build and leaves the version at the 0.0.0 fallback — the
+      # `nix` workflow asserts against that regression.
       pyprojectOverrides = _final: prev: {
         dantofa-saas = prev.dantofa-saas.overrideAttrs (old: {
           env = (old.env or { }) // {
-            SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DANTOFA_SAAS = version;
+            SETUPTOOLS_SCM_PRETEND_VERSION = version;
           };
         });
       };

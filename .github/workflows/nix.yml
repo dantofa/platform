@@ -38,3 +38,17 @@ jobs:
 
       - name: Flake check
         run: nix flake check --no-update-lock-file --print-build-logs
+
+      # The version is stamped into the wheel from the flake source (commit date +
+      # short rev) via SETUPTOOLS_SCM_PRETEND_VERSION. If that injection ever breaks
+      # again (e.g. the dist-suffixed env var that was silently ignored), the build
+      # falls back to a bare "0.0.0". Assert the version is actually stamped so
+      # downstream `dctl --version` keeps naming the commit it was built from.
+      - name: Verify version is stamped
+        run: |
+          version="$(nix run .#default -- --version)"
+          echo "dctl --version -> $version"
+          case "$version" in
+            0.0.0.dev*+g*) echo "version stamped from flake source" ;;
+            *) echo "::error::version not stamped (got '$version', expected 0.0.0.dev<date>+g<rev>)"; exit 1 ;;
+          esac
