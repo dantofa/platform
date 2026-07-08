@@ -37,14 +37,19 @@ format *args:
   uv run -- ruff format {{args}}
 
 # All repository update operations live here. Currently: pin any newly-added
-# GitHub Actions to a commit SHA, then refresh the pinned SHAs to the latest
-# matching version (ratchet keeps them pinned). `pin` is idempotent on already
-# -pinned refs, so it's safe to run every time before `update`.
+# GitHub Actions to a commit SHA, upgrade the pins to the latest available
+# version (ratchet `upgrade`, not `update`: `update` stays within the existing
+# major constraint, so it can never move e.g. v9 -> v22; `upgrade` rewrites the
+# constraint to the latest and re-pins), then refresh the Nix flake inputs
+# (flake.lock). `pin` is idempotent on already-pinned refs, so it's safe to run
+# every time before `upgrade`. Run this deliberately — freshness is a manual
+# operation, never a merge gate.
 update:
   #!/usr/bin/env bash
   set -euo pipefail
   find .github/workflows -name "*.yml" -print0 | xargs -0 -L 1 ratchet pin
-  find .github/workflows -name "*.yml" -print0 | xargs -0 -L 1 ratchet update
+  find .github/workflows -name "*.yml" -print0 | xargs -0 -L 1 ratchet upgrade
+  nix flake update
 
 sast:
   #!/usr/bin/env bash

@@ -126,8 +126,10 @@ CI and pre-commit pick it up automatically.
   defensively, so they pass regardless of color.
 - Requires **Python >= 3.13**.
 - **All repository update operations go through `just update`** — never bump
-  pinned versions by hand. Today it runs `ratchet update` to refresh the
-  GitHub Actions SHAs; future update operations belong in this target too.
+  pinned versions by hand. Today it runs `ratchet upgrade` to refresh the
+  GitHub Actions SHAs to the latest available version (`upgrade`, not `update`:
+  `update` stays within the pinned major, so it can't move e.g. v9 -> v22),
+  then `nix flake update`; future update operations belong in this target too.
 - **GitHub Actions are pinned to full commit SHAs** (supply-chain hardening),
   with a `# ratchet:owner/action@vX` marker that `ratchet` uses to update them.
   Dependabot (`.github/dependabot.yml`) opens weekly PRs to bump them; `just

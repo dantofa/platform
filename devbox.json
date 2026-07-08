@@ -12,17 +12,17 @@
     "kind@latest",
     "docker@latest",
     "kubectl@latest",
-    "flux@latest"
+    "fluxcd@latest"
   ],
   "env": {
     "KUBECONFIG": ".kubeconfig"
   },
   "aliases": {
     "dctl": "bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea -- uv run -- dctl",
-    "kg": "kubectl get",
-    "kd": "kubectl describe",
-    "kl": "kubectl logs",
-    "ke": "kubectl edit"
+    "kg":   "kubectl get",
+    "kd":   "kubectl describe",
+    "kl":   "kubectl logs",
+    "ke":   "kubectl edit"
   },
   "shell": {
     "init_hook": ["uv run -- pre-commit install -t pre-commit -t pre-push"]

@@ -14,3 +14,7 @@ coverage.xml
 
 dist/
 **/*.pyc
+
+# nix build symlinks
+result
+result-*
