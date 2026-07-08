@@ -39,12 +39,19 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      # bws (from nixpkgs, orthogonal to the package) injects the DigitalOcean
-      # token, then runs the shipped dctl to guarantee teardown.
+      # bws is a devbox-managed dev tool (pinned in devbox.lock), kept orthogonal
+      # to the package — it is never in the flake. Pulling it from devbox rather
+      # than `nix shell nixpkgs#bws` also sidesteps nixpkgs' unfree gate (bws is
+      # unfree; devbox's generated config allows it).
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # ratchet:jetify-com/devbox-install-action@v0.15.0
+
+      # bws injects the DigitalOcean token, then runs the shipped dctl (the flake
+      # artifact via `nix run .#default`, not `uv run`) to guarantee teardown.
       - name: Destroy preview cluster
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
-          nix shell nixpkgs#bws --command
+          devbox run --
           bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
           nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
