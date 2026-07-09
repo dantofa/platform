@@ -66,18 +66,23 @@ neutral.
 
 Dependencies are split by purpose, and new tools must follow the same split:
 
-- **Generic, language-agnostic dev tools live in devbox** (`devbox.json`) —
-  e.g. `uv`, `just`, `actionlint`, `yamllint`, `shellcheck`, `gh`, `ratchet`.
-  These are pinned via `devbox.lock` and are what CI uses too, so versions
-  match local dev exactly.
+- **Generic, language-agnostic dev tools live in the flake dev shell**
+  (`devShells.default` in `flake.nix`) — e.g. `uv`, `just`, `actionlint`,
+  `yamllint`, `shellcheck`, `gh`, `ratchet`, plus the runtime CLIs (`kind`,
+  `flux`, `docker`) and `kubectl`/`bws`. They come from the **same pinned
+  nixpkgs as the package** (one resolver, one lockfile — no separate
+  `devbox.lock`), and are what CI uses too via `nix develop --command`, so
+  versions match local dev exactly. Enter it with `nix develop` (or `direnv`).
+  The runtime CLIs are shared with the package through the `runtimeTools` list,
+  so there is a single source for them.
 - **Python project tools go through uv** as dev dependencies
   (`[dependency-groups].dev` in `pyproject.toml`) — e.g. `ruff`, `basedpyright`,
   `skylos`, `pytest`, `pre-commit`. Add them with `uv add --dev <tool>`, never
   by hand-editing the dependency list.
 
 Rule of thumb: *if it analyzes or runs the Python project, it's a uv dev
-dependency; if it's general-purpose tooling for the environment, it's a devbox
-package.*
+dependency; if it's general-purpose tooling for the environment, it's a flake
+dev-shell package.*
 
 Runtime dependencies (things the CLI imports at runtime, like `typer`) go in
 `[project].dependencies`, added via `uv add <pkg>`.
@@ -113,13 +118,16 @@ CI and pre-commit pick it up automatically.
   noisy repo-policy nags unrelated to the source.
 - **pre-commit delegates to `just` targets** (`.pre-commit-config.yaml`) so
   command definitions stay in one place. The hook is installed automatically by
-  the devbox `init_hook` on shell entry.
-- **CI runs through devbox** (`.github/workflows/`): `devbox run -- uv sync
-  --locked`, then `devbox run -- just lint` / `just test`. Because it uses
-  devbox, CI tooling versions match local. Keep CI steps as thin wrappers over
-  `just`.
+  the dev shell's `shellHook` on `nix develop` entry (skipped under `CI`).
+- **CI runs through the flake dev shell** (`.github/workflows/`): install Nix,
+  then `nix develop --command uv sync --locked` and `nix develop --command just
+  lint` / `just test`. Because the shell is the same pinned nixpkgs as local
+  dev, CI tooling versions match. Keep CI steps as thin wrappers over `just`.
+  The CLI-invoking workflows (`local`, `preview`, `teardown`) still run the
+  shipped artifact via `nix run .#default`; `preview`/`teardown` also use
+  `nix develop --command bws ...` for secret injection.
 - **CI forces plain (uncolored) output** via workflow-level `env: { FORCE_COLOR:
-  "", NO_COLOR: "1" }`. devbox's pseudo-terminal otherwise makes rich/Typer
+  "", NO_COLOR: "1" }`. A pseudo-terminal otherwise makes rich/Typer
   colorize, which mangles logs and breaks substring assertions on `--help`.
   `FORCE_COLOR` must be **empty** — any non-empty value (even `"0"`) still forces
   color, and `FORCE_COLOR` overrides `NO_COLOR`. Tests also strip ANSI

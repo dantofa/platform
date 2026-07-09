@@ -1,5 +1,4 @@
 .skylos/
-.devbox/
 .venv/
 .pytest_cache/
 .ruff_cache/
@@ -18,3 +17,6 @@ dist/
 # nix build symlinks
 result
 result-*
+
+# local, per-developer env loaded by the dev shell (secrets/config)
+.env
