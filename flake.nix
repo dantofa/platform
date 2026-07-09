@@ -75,6 +75,16 @@
       forAllSystems = lib.genAttrs systems;
       pkgsFor = system: nixpkgs.legacyPackages.${system};
 
+      # Dev-shell packages come from the same pinned nixpkgs as the package (one
+      # resolver, one lockfile — no devbox/nixhub drift). bws is unfree, so allow
+      # exactly that one package rather than opening allowUnfree globally.
+      devPkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "bws" ];
+        };
+
       # External CLIs the local-cluster commands shell out to. git is deliberately
       # absent: provenance is read natively via dulwich.
       runtimeTools = pkgs: [
@@ -132,14 +142,42 @@
       devShells = forAllSystems (
         system:
         let
-          pkgs = pkgsFor system;
+          pkgs = devPkgsFor system;
         in
         {
+          # The development environment (replaces devbox.json). Generic dev/CI
+          # tooling from the flake's pinned nixpkgs, plus the runtime CLIs shared
+          # with the package via `runtimeTools` — so an editable `uv run dctl`
+          # shells out to the same kind/flux/docker the packaged dctl bundles.
+          # Enter with `nix develop` (or `direnv`); dctl itself runs editable via
+          # `uv run -- dantofa.cli` / `just run`, not a prebuilt wrapper.
           default = pkgs.mkShell {
-            packages = [
-              self.packages.${system}.default
+            packages = (runtimeTools pkgs) ++ [
               pkgs.uv
+              pkgs.just
+              pkgs.actionlint
+              pkgs.yamllint
+              pkgs.gh
+              pkgs.ratchet
+              pkgs.shellcheck
+              pkgs.bws
+              pkgs.kubectl
             ];
+            # Local kubeconfig target, matching the old devbox env.
+            KUBECONFIG = ".kubeconfig";
+            shellHook = ''
+              # Load local, gitignored config/secrets (e.g. BWS_ACCESS_TOKEN,
+              # BWS_PROJECT_ID) — see .env.example.
+              if [ -f .env ]; then
+                set -a
+                . ./.env
+                set +a
+              fi
+              # Install git hooks for interactive dev only (skip under CI).
+              if [ -z "''${CI:-}" ] && [ -d .git ]; then
+                uv run -- pre-commit install -t pre-commit -t pre-push >/dev/null 2>&1 || true
+              fi
+            '';
           };
         }
       );

@@ -19,13 +19,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install devbox
-        uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # ratchet:jetify-com/devbox-install-action@v0.15.0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # ratchet:DeterminateSystems/nix-installer-action@v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # ratchet:nix-community/cache-nix-action@v7
         with:
-          enable-cache: true
+          primary-key: nix-devshell-${{ runner.os }}-${{ hashFiles('flake.lock', 'uv.lock', '**/*.nix') }}
+          restore-prefixes-first-match: nix-devshell-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-devshell-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
 
       - name: Sync dependencies
-        run: devbox run -- uv sync --locked
+        run: nix develop --command uv sync --locked
 
       - name: Test
-        run: devbox run -- just test
+        run: nix develop --command just test

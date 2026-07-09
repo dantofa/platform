@@ -37,10 +37,12 @@ $ dctl --help
 
 ## Development
 
-Requires Python >= 3.13. Tooling is managed with
-[devbox](https://www.jetify.com/devbox) (uv, just, linters) and
-[uv](https://docs.astral.sh/uv/) (Python dependencies). Enter the environment
-with `devbox shell` — this also installs the pre-commit hook.
+Requires Python >= 3.13. Generic tooling (uv, just, linters, kind/flux/docker,
+kubectl, bws) is provided by the flake dev shell, and
+[uv](https://docs.astral.sh/uv/) manages the Python dependencies. Enter the
+environment with `nix develop` (or [`direnv`](https://direnv.net/)) — this also
+installs the pre-commit hook. Copy `.env.example` to `.env` for local secrets
+(e.g. the Bitwarden access token); the shell loads it automatically.
 
 Common tasks are run via [`just`](https://github.com/casey/just):
 
