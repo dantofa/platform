@@ -1,5 +1,5 @@
 {
-  description = "dantofa-saas — the dctl CLI, packaged with its runtime CLIs (kind/flux/docker).";
+  description = "dantofa-saas — the dctl CLI, packaged with its runtime CLIs (kind/flux/docker/git).";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -85,12 +85,15 @@
           config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "bws" ];
         };
 
-      # External CLIs the local-cluster commands shell out to. git is deliberately
-      # absent: provenance is read natively via dulwich.
+      # External CLIs the CLI shells out to, bundled into the package closure so
+      # Nix consumers need no separate install. git is included for the OCI-stamp
+      # provenance read (HEAD / remote / branch / dirty). The pip/uvx channel does
+      # not get these — it relies on them being on the host PATH.
       runtimeTools = pkgs: [
         pkgs.kind
         pkgs.fluxcd
         pkgs.docker-client
+        pkgs.git
       ];
 
       pythonSetFor =
@@ -112,8 +115,8 @@
           pythonSet = pythonSetFor system;
           venv = pythonSet.mkVirtualEnv "dantofa-saas-env" workspace.deps.default;
         in
-        # Wrap both entry points so kind/flux/docker travel in the runtime closure
-        # — that is what spares Nix consumers a separate tool install.
+        # Wrap both entry points so kind/flux/docker/git travel in the runtime
+        # closure — that is what spares Nix consumers a separate tool install.
         pkgs.symlinkJoin {
           name = "dctl-${version}";
           paths = [ venv ];
@@ -135,7 +138,7 @@
         default = {
           type = "app";
           program = "${self.packages.${system}.default}/bin/dctl";
-          meta.description = "Run the dctl CLI (bundled with kind/flux/docker).";
+          meta.description = "Run the dctl CLI (bundled with kind/flux/docker/git).";
         };
       });
 
@@ -148,7 +151,7 @@
           # The development environment (replaces devbox.json). Generic dev/CI
           # tooling from the flake's pinned nixpkgs, plus the runtime CLIs shared
           # with the package via `runtimeTools` — so an editable `uv run dctl`
-          # shells out to the same kind/flux/docker the packaged dctl bundles.
+          # shells out to the same kind/flux/docker/git the packaged dctl bundles.
           # Enter with `nix develop` (or `direnv`); dctl itself runs editable via
           # `uv run -- dantofa.cli` / `just run`, not a prebuilt wrapper.
           default = pkgs.mkShell {
