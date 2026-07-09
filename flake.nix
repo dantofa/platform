@@ -125,6 +125,7 @@
         default = {
           type = "app";
           program = "${self.packages.${system}.default}/bin/dctl";
+          meta.description = "Run the dctl CLI (bundled with kind/flux/docker).";
         };
       });
 
