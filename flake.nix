@@ -62,7 +62,7 @@
           src = ./.;
           # Recompute with `just update` / after changing go.sum. Set to
           # lib.fakeHash and rebuild to learn the new value.
-          vendorHash = "sha256-gIpWDwjDqv/ySBmHucmz99mivmVPVEQVD24cQtUj39s=";
+          vendorHash = "sha256-pYBRBIpezabyvQlJJYU4bT1W4w+7YbRqUYlj1Q9HZrU=";
 
           subPackages = [ "cmd/dctl" ];
           env.CGO_ENABLED = "0";
