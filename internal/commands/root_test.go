@@ -15,6 +15,11 @@ func TestRootWiresDOGroupAndSubcommands(t *testing.T) {
 		{"do", "space", "list"},
 		{"do", "space", "create"},
 		{"do", "space", "delete"},
+		{"local", "cluster", "list"},
+		{"local", "cluster", "create"},
+		{"local", "cluster", "push"},
+		{"local", "cluster", "delete"},
+		{"local", "cluster", "connect"},
 	} {
 		if _, _, err := root.Find(path); err != nil {
 			t.Errorf("command %v not wired: %v", path, err)

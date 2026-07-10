@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 
 	"github.com/spf13/cobra"
 
@@ -19,8 +18,10 @@ import (
 // the non-zero exit code.
 var errHandled = errors.New("handled")
 
-// NewRootCmd builds the dctl root command tree. The DigitalOcean group is always
-// present; the local group is registered only when kind is on PATH.
+// NewRootCmd builds the dctl root command tree. Both resource groups are always
+// present: the Nix package bundles the local group's runtime CLIs (kind/flux/
+// docker) on PATH, so `local` never needs to be hidden — if a tool is somehow
+// missing, the command surfaces a clear "not installed" error instead.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "dctl",
@@ -35,9 +36,7 @@ func NewRootCmd() *cobra.Command {
 	root.SetVersionTemplate("{{.Version}}\n")
 
 	root.AddCommand(newDOCmd())
-	if executableAvailable("kind") {
-		root.AddCommand(newLocalCmd())
-	}
+	root.AddCommand(newLocalCmd())
 	return root
 }
 
@@ -51,10 +50,4 @@ func Execute() int {
 		return 1
 	}
 	return 0
-}
-
-// executableAvailable reports whether name resolves on PATH.
-func executableAvailable(name string) bool {
-	_, err := exec.LookPath(name)
-	return err == nil
 }
