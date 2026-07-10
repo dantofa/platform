@@ -1,70 +1,26 @@
 {
-  description = "dantofa-saas — the dctl CLI, packaged with its runtime CLIs (kind/flux/docker/git).";
+  description = "dantofa platform — the dctl control CLI, packaged with its runtime CLIs (kind/flux/docker/git).";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-
-    pyproject-nix = {
-      url = "github:pyproject-nix/pyproject.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    uv2nix = {
-      url = "github:pyproject-nix/uv2nix";
-      inputs.pyproject-nix.follows = "pyproject-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    pyproject-build-systems = {
-      url = "github:pyproject-nix/build-system-pkgs";
-      inputs.pyproject-nix.follows = "pyproject-nix";
-      inputs.uv2nix.follows = "uv2nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      uv2nix,
-      pyproject-nix,
-      pyproject-build-systems,
-    }:
+    { self, nixpkgs }:
     let
       inherit (nixpkgs) lib;
 
-      # hatch-vcs derives the version from git, but a sandboxed Nix build has no
-      # .git — so we feed it a version derived purely from the flake source: the
-      # commit date as the PEP 440 dev segment, plus the short rev as the local
-      # segment. Downstream tracks this flake by rev (e.g. a devbox input on
-      # `master` that `devbox update` locks to the latest SHA), so `dctl --version`
-      # names the exact commit they run — and changes when they update. There are
-      # no release tags in this model; a flake cannot read git tags anyway.
+      # A sandboxed Nix build has no .git, so we derive the version purely from
+      # the flake source: the commit date as a PEP 440-style dev segment plus the
+      # short rev. Downstream tracks this flake by rev (e.g. a Nix input on
+      # `master` that `nix flake update` locks to the latest SHA), so
+      # `dctl --version` names the exact commit and changes when they update.
+      # There are no release tags in this model; a flake cannot read git tags.
       version =
         "0.0.0.dev"
         + (builtins.substring 0 8 (self.lastModifiedDate or "00000000"))
         + "+g"
         + (self.shortRev or self.dirtyShortRev or "dev");
-
-      # uv.lock + pyproject.toml are the single source of truth for the dependency
-      # set — the very same lockfile the uv/pip channel installs from.
-      workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./.; };
-      overlay = workspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
-
-      # Give hatch-vcs its version for the root distribution only (not deps). The
-      # override is scoped to this one derivation, so the *unsuffixed*
-      # SETUPTOOLS_SCM_PRETEND_VERSION is safe (nothing else builds here). The
-      # dist-suffixed SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DANTOFA_SAAS is silently
-      # ignored under this build and leaves the version at the 0.0.0 fallback — the
-      # `nix` workflow asserts against that regression.
-      pyprojectOverrides = _final: prev: {
-        dantofa-saas = prev.dantofa-saas.overrideAttrs (old: {
-          env = (old.env or { }) // {
-            SETUPTOOLS_SCM_PRETEND_VERSION = version;
-          };
-        });
-      };
 
       systems = [
         "x86_64-linux"
@@ -76,8 +32,8 @@
       pkgsFor = system: nixpkgs.legacyPackages.${system};
 
       # Dev-shell packages come from the same pinned nixpkgs as the package (one
-      # resolver, one lockfile — no devbox/nixhub drift). bws is unfree, so allow
-      # exactly that one package rather than opening allowUnfree globally.
+      # resolver, one lockfile). bws is unfree, so allow exactly that one package
+      # rather than opening allowUnfree globally.
       devPkgsFor =
         system:
         import nixpkgs {
@@ -85,10 +41,9 @@
           config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "bws" ];
         };
 
-      # External CLIs the CLI shells out to, bundled into the package closure so
-      # Nix consumers need no separate install. git is included for the OCI-stamp
-      # provenance read (HEAD / remote / branch / dirty). The pip/uvx channel does
-      # not get these — it relies on them being on the host PATH.
+      # External CLIs the platform shells out to, bundled into the package closure
+      # so Nix consumers need no separate install. git is included for the
+      # OCI-stamp provenance read (HEAD / remote / branch / dirty).
       runtimeTools = pkgs: [
         pkgs.kind
         pkgs.fluxcd
@@ -96,37 +51,42 @@
         pkgs.git
       ];
 
-      pythonSetFor =
-        system:
-        let
-          pkgs = pkgsFor system;
-        in
-        (pkgs.callPackage pyproject-nix.build.packages { python = pkgs.python313; }).overrideScope
-          (lib.composeManyExtensions [
-            pyproject-build-systems.overlays.default
-            overlay
-            pyprojectOverrides
-          ]);
-
       dctlFor =
         system:
         let
           pkgs = pkgsFor system;
-          pythonSet = pythonSetFor system;
-          venv = pythonSet.mkVirtualEnv "dantofa-saas-env" workspace.deps.default;
         in
-        # Wrap both entry points so kind/flux/docker/git travel in the runtime
-        # closure — that is what spares Nix consumers a separate tool install.
-        pkgs.symlinkJoin {
-          name = "dctl-${version}";
-          paths = [ venv ];
+        pkgs.buildGoModule {
+          pname = "dctl";
+          inherit version;
+          src = ./.;
+          # Recompute with `just update` / after changing go.sum. Set to
+          # lib.fakeHash and rebuild to learn the new value.
+          vendorHash = "sha256-gIpWDwjDqv/ySBmHucmz99mivmVPVEQVD24cQtUj39s=";
+
+          subPackages = [ "cmd/dctl" ];
+          env.CGO_ENABLED = "0";
+
+          # Stamp the source-derived version into the binary; -s -w drop debug
+          # info for a smaller closure.
+          ldflags = [
+            "-s"
+            "-w"
+            "-X github.com/dantofa/platform/internal/version.Version=${version}"
+          ];
+
+          # Wrap dctl so kind/flux/docker/git travel in its runtime closure —
+          # that is what spares Nix consumers a separate tool install.
           nativeBuildInputs = [ pkgs.makeWrapper ];
-          postBuild = ''
-            for prog in dctl dantofa.cli; do
-              wrapProgram "$out/bin/$prog" \
-                --prefix PATH : ${lib.makeBinPath (runtimeTools pkgs)}
-            done
+          postInstall = ''
+            wrapProgram "$out/bin/dctl" \
+              --prefix PATH : ${lib.makeBinPath (runtimeTools pkgs)}
           '';
+
+          meta = {
+            description = "dantofa platform control CLI (bundled with kind/flux/docker/git).";
+            mainProgram = "dctl";
+          };
         };
     in
     {
@@ -148,25 +108,31 @@
           pkgs = devPkgsFor system;
         in
         {
-          # The development environment (replaces devbox.json). Generic dev/CI
-          # tooling from the flake's pinned nixpkgs, plus the runtime CLIs shared
-          # with the package via `runtimeTools` — so an editable `uv run dctl`
-          # shells out to the same kind/flux/docker/git the packaged dctl bundles.
-          # Enter with `nix develop` (or `direnv`); dctl itself runs editable via
-          # `uv run -- dantofa.cli` / `just run`, not a prebuilt wrapper.
+          # The development environment. Generic dev/CI tooling from the flake's
+          # pinned nixpkgs, plus the runtime CLIs shared with the package via
+          # `runtimeTools` — so a `go run ./cmd/dctl` / `just run` shells out to
+          # the same kind/flux/docker/git the packaged dctl bundles. Enter with
+          # `nix develop` (or `direnv`).
           default = pkgs.mkShell {
             packages = (runtimeTools pkgs) ++ [
-              pkgs.uv
+              # Go toolchain + analyzers.
+              pkgs.go
+              pkgs.gopls
+              pkgs.golangci-lint
+              pkgs.gofumpt
+              pkgs.govulncheck
+              # Generic env tooling.
               pkgs.just
               pkgs.actionlint
               pkgs.yamllint
               pkgs.gh
               pkgs.ratchet
               pkgs.shellcheck
+              pkgs.pre-commit
               pkgs.bws
               pkgs.kubectl
             ];
-            # Local kubeconfig target, matching the old devbox env.
+            # Local kubeconfig target.
             KUBECONFIG = ".kubeconfig";
             shellHook = ''
               # Load local, gitignored config/secrets (e.g. BWS_ACCESS_TOKEN,
@@ -178,7 +144,7 @@
               fi
               # Install git hooks for interactive dev only (skip under CI).
               if [ -z "''${CI:-}" ] && [ -d .git ]; then
-                uv run -- pre-commit install -t pre-commit -t pre-push >/dev/null 2>&1 || true
+                pre-commit install -t pre-commit -t pre-push >/dev/null 2>&1 || true
               fi
             '';
           };

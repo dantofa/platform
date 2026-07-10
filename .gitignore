@@ -1,18 +1,8 @@
-.skylos/
-.venv/
-.pytest_cache/
-.ruff_cache/
-.import_linter_cache/
 .kubeconfig
-.python-version
 
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
-
-dist/
-**/*.pyc
+# Go
+/dist/
+*.out
 
 # nix build symlinks
 result

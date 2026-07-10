@@ -1,88 +1,64 @@
-# dantofa-saas
+# dantofa platform
 
-A small command-line utility built with [Typer](https://typer.tiangolo.com/).
+`dctl` — the dantofa platform control CLI (and, in time, its operator). A Go
+tool that provisions and manages DigitalOcean / local Kubernetes clusters and
+their platform infrastructure.
 
 ## Install
 
-Installed directly from this repository (not published to a package index),
-through either channel.
-
-### With uv / pipx (Python)
-
-```bash
-uv tool install git+https://github.com/dantofa/cli.git
-# or: pipx install git+https://github.com/dantofa/cli.git
-```
-
-Run it once without installing:
-
-```bash
-uvx --from git+https://github.com/dantofa/cli.git dctl --help
-```
-
-Pin a version by appending a ref, e.g.
-`git+https://github.com/dantofa/cli.git@v0.1.0`. This channel installs only
-`dctl` — the CLIs it shells out to (kind, flux, docker, git) must already be on
-your PATH.
-
-### With Nix (bundles the cluster CLIs)
+Distributed as a **Nix flake** (not published to a package index).
 
 Run it once:
 
 ```bash
-nix run github:dantofa/cli -- --help
+nix run github:dantofa/platform -- --help
 ```
 
 Install into your profile:
 
 ```bash
-nix profile install github:dantofa/cli
+nix profile install github:dantofa/platform
 ```
 
-The Nix build wraps `dctl` so kind, flux, and docker travel in its closure — no
+The build wraps `dctl` so kind, flux, docker, and git travel in its closure — no
 separate install (a running Docker daemon is still a host prerequisite). Pin a
-commit by appending it: `github:dantofa/cli/<rev>`.
+commit by appending it: `github:dantofa/platform/<rev>`.
 
 Consume it as a flake input:
 
 ```nix
-inputs.dantofa-cli.url = "github:dantofa/cli";
-# per system: dantofa-cli.packages.${system}.default   # the wrapped dctl
+inputs.dantofa-platform.url = "github:dantofa/platform";
+# per system: dantofa-platform.packages.${system}.default   # the wrapped dctl
 ```
 
-Or track it from a downstream devbox/flake project; `devbox update` (or `nix
-flake update`) locks the latest `master` commit, and `dctl --version` reports it
-as `0.0.0.dev<date>+g<sha>`.
+`nix flake update` locks the latest `master` commit, and `dctl --version`
+reports it as `0.0.0.dev<date>+g<sha>`.
 
 ## Usage
 
 ```bash
-$ dctl
-Hello, world!
-
-$ dctl --name dantofa
-Hello, dantofa!
-
 $ dctl --help
+$ dctl --version
 ```
 
 ## Development
 
-Requires Python >= 3.13. Generic tooling (uv, just, linters, kind/flux/docker,
-kubectl, bws) is provided by the flake dev shell, and
-[uv](https://docs.astral.sh/uv/) manages the Python dependencies. Enter the
-environment with `nix develop` (or [`direnv`](https://direnv.net/)) — this also
-installs the pre-commit hook. Copy `.env.example` to `.env` for local secrets
-(e.g. the Bitwarden access token); the shell loads it automatically.
+Requires [Nix](https://nixos.org/) with flakes. The flake dev shell provides the
+Go toolchain (go, gopls, golangci-lint, gofumpt, govulncheck) plus generic
+tooling (just, kind/flux/docker/git, kubectl, bws, linters). Enter it with `nix
+develop` (or [`direnv`](https://direnv.net/)) — this also installs the
+pre-commit hook. Copy `.env.example` to `.env` for local secrets (e.g. the
+Bitwarden access token); the shell loads it automatically.
 
-Common tasks are run via [`just`](https://github.com/casey/just):
+Common tasks run via [`just`](https://github.com/casey/just):
 
 ```bash
-just run [args]    # run the CLI
-just test          # run the test suite
-just lint          # ruff, ty, actionlint, yamllint
-just format        # ruff format
-just sast          # skylos security scan
+just run [args]    # go run ./cmd/dctl
+just test          # go test ./...
+just build         # build dist/dctl (version-stamped)
+just lint          # gofumpt, go vet, golangci-lint, deadcode, actionlint, yamllint
+just format        # gofumpt -w
+just sast          # govulncheck
 ```
 
 See [CLAUDE.md](CLAUDE.md) for contributor conventions and project constraints.

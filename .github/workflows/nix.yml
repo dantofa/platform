@@ -20,16 +20,13 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # ratchet:DeterminateSystems/nix-installer-action@v22
 
-      # The uv2nix-built Python closure + wheel + wrapper aren't in cache.nixos.org
-      # (they're built from our uv.lock), so cache them in the GitHub Actions cache
-      # to avoid a cold rebuild on every run.
-      # TODO: the GH Actions cache is 10 GB and LRU-evicted; if it proves too small
-      # or flaky for the closure, evaluate a dedicated binary cache — FlakeHub Cache
-      # (OIDC, installer-native) or Cachix (public repos get a 5 GB free tier).
+      # The Go build closure + wrapper aren't in cache.nixos.org (they're built
+      # from our go.sum), so cache the store in the GitHub Actions cache to avoid a
+      # cold rebuild on every run.
       - name: Cache Nix store
         uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # ratchet:nix-community/cache-nix-action@v7
         with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'uv.lock', '**/*.nix') }}
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'go.sum', '**/*.nix') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
           purge: true
           purge-prefixes: nix-${{ runner.os }}-
@@ -39,11 +36,11 @@ jobs:
       - name: Flake check
         run: nix flake check --no-update-lock-file --print-build-logs
 
-      # The version is stamped into the wheel from the flake source (commit date +
-      # short rev) via SETUPTOOLS_SCM_PRETEND_VERSION. If that injection ever breaks
-      # again (e.g. the dist-suffixed env var that was silently ignored), the build
-      # falls back to a bare "0.0.0". Assert the version is actually stamped so
-      # downstream `dctl --version` keeps naming the commit it was built from.
+      # The version is stamped into the binary from the flake source (commit date +
+      # short rev) via `-ldflags -X …/internal/version.Version`. If that injection
+      # ever breaks, the build falls back to the bare "dev" default. Assert the
+      # version is actually stamped so `dctl --version` keeps naming the commit it
+      # was built from.
       - name: Verify version is stamped
         run: |
           version="$(nix run .#default -- --version)"
