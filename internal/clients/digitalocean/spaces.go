@@ -2,12 +2,16 @@ package digitalocean
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
+	"github.com/digitalocean/godo"
 
 	core "github.com/dantofa/platform/internal/core/digitalocean"
 )
@@ -22,39 +26,90 @@ const (
 // SpacesClient is a semantic wrapper over the S3 client pointed at the regional
 // DigitalOcean Spaces endpoint. Spaces is S3-compatible and not part of the DO
 // REST API, so bucket lifecycle goes through S3.
+//
+// Credentials come from $SPACES_ACCESS_KEY_ID / $SPACES_SECRET_ACCESS_KEY when
+// set; otherwise the client mints an *ephemeral* full-access Spaces key via the
+// DO API (from a DO token) and Close revokes it — so standing Spaces credentials
+// are optional and the DO token alone suffices.
 type SpacesClient struct {
-	s3 *s3.Client
+	s3        *s3.Client
+	doClient  *godo.Client // set only for the ephemeral-credential path
+	ephemeral string       // ephemeral access key id to revoke on Close (else "")
 }
 
-// NewSpacesClient builds a Spaces client for the given region (falling back to
-// $DIGITALOCEAN_SPACES_REGION then nyc3), reading credentials from
-// $SPACES_ACCESS_KEY_ID / $SPACES_SECRET_ACCESS_KEY.
-func NewSpacesClient(region string) (*SpacesClient, error) {
+func resolveRegion(region string) string {
 	if region == "" {
 		region = os.Getenv(spacesRegionEnv)
 	}
 	if region == "" {
 		region = defaultRegion
 	}
-	key := os.Getenv(spacesKeyEnv)
-	secret := os.Getenv(spacesSecretEnv)
-	if key == "" || secret == "" {
-		return nil, MissingCredentials(
-			fmt.Sprintf("set $%s and $%s.", spacesKeyEnv, spacesSecretEnv),
-		)
-	}
-	endpoint := fmt.Sprintf("https://%s.digitaloceanspaces.com", region)
-	client := s3.New(s3.Options{
+	return region
+}
+
+func newS3(region, key, secret string) *s3.Client {
+	return s3.New(s3.Options{
 		Region:       region,
-		BaseEndpoint: aws.String(endpoint),
+		BaseEndpoint: aws.String(fmt.Sprintf("https://%s.digitaloceanspaces.com", region)),
 		Credentials:  credentials.NewStaticCredentialsProvider(key, secret, ""),
 	})
-	return &SpacesClient{s3: client}, nil
+}
+
+// NewSpacesClient builds a Spaces client for the region (falling back to
+// $DIGITALOCEAN_SPACES_REGION then nyc3). It prefers standing Spaces keys from
+// the environment; absent those, it mints an ephemeral full-access key via the
+// DO API (token from arg or $DIGITALOCEAN_ACCESS_TOKEN) — revoke it with Close.
+func NewSpacesClient(ctx context.Context, region, token string) (*SpacesClient, error) {
+	region = resolveRegion(region)
+
+	key, secret := os.Getenv(spacesKeyEnv), os.Getenv(spacesSecretEnv)
+	if key != "" && secret != "" {
+		return &SpacesClient{s3: newS3(region, key, secret)}, nil
+	}
+
+	token = resolveDOToken(token)
+	if token == "" {
+		return nil, MissingCredentials(fmt.Sprintf(
+			"set $%s and $%s, or a DigitalOcean token (--token / $%s) to mint an ephemeral key.",
+			spacesKeyEnv, spacesSecretEnv, tokenEnv,
+		))
+	}
+	doClient := godo.NewFromToken(token)
+	created, _, err := doClient.SpacesKeys.Create(ctx, &godo.SpacesKeyCreateRequest{
+		Name:   fmt.Sprintf("dctl-ephemeral-%d", time.Now().UnixNano()),
+		Grants: []*godo.Grant{{Bucket: "", Permission: godo.SpacesKeyFullAccess}},
+	})
+	if err != nil {
+		return nil, apiError(err)
+	}
+	return &SpacesClient{
+		s3:        newS3(region, created.AccessKey, created.SecretKey),
+		doClient:  doClient,
+		ephemeral: created.AccessKey,
+	}, nil
+}
+
+// Close revokes the ephemeral Spaces key, if one was minted (a no-op for static
+// credentials). Callers should defer it so the key is removed even on error.
+func (c *SpacesClient) Close() error {
+	if c.ephemeral == "" || c.doClient == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := c.doClient.SpacesKeys.Delete(ctx, c.ephemeral); err != nil {
+		return apiError(err)
+	}
+	return nil
 }
 
 // ListBuckets returns every Spaces bucket.
 func (c *SpacesClient) ListBuckets(ctx context.Context) ([]core.Bucket, error) {
-	out, err := c.s3.ListBuckets(ctx, &s3.ListBucketsInput{})
+	var out *s3.ListBucketsOutput
+	err := c.retry(func() (err error) {
+		out, err = c.s3.ListBuckets(ctx, &s3.ListBucketsInput{})
+		return err
+	})
 	if err != nil {
 		return nil, apiError(err)
 	}
@@ -74,7 +129,10 @@ func (c *SpacesClient) ListBuckets(ctx context.Context) ([]core.Bucket, error) {
 
 // CreateBucket creates a bucket, surfacing the raw S3 error (incl. already-exists).
 func (c *SpacesClient) CreateBucket(ctx context.Context, name string) error {
-	_, err := c.s3.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(name)})
+	err := c.retry(func() error {
+		_, err := c.s3.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(name)})
+		return err
+	})
 	if err != nil {
 		return apiError(err)
 	}
@@ -83,9 +141,40 @@ func (c *SpacesClient) CreateBucket(ctx context.Context, name string) error {
 
 // DeleteBucket deletes a bucket (must be empty).
 func (c *SpacesClient) DeleteBucket(ctx context.Context, name string) error {
-	_, err := c.s3.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(name)})
+	err := c.retry(func() error {
+		_, err := c.s3.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(name)})
+		return err
+	})
 	if err != nil {
 		return apiError(err)
 	}
 	return nil
+}
+
+// retry runs an S3 op, retrying transient auth failures when using an ephemeral
+// key (a freshly-minted Spaces key can take a few seconds to become valid).
+// Static credentials are called once, so a genuine auth error isn't masked.
+func (c *SpacesClient) retry(fn func() error) error {
+	if c.ephemeral == "" {
+		return fn()
+	}
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if err = fn(); err == nil || !transientAuth(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Second)
+	}
+	return err
+}
+
+func transientAuth(err error) bool {
+	var api smithy.APIError
+	if errors.As(err, &api) {
+		switch api.ErrorCode() {
+		case "InvalidAccessKeyId", "SignatureDoesNotMatch", "AccessDenied", "Forbidden":
+			return true
+		}
+	}
+	return false
 }

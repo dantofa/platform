@@ -22,12 +22,19 @@ type ClusterClient struct {
 	godo *godo.Client
 }
 
+// resolveDOToken returns the DO API token from the argument or
+// $DIGITALOCEAN_ACCESS_TOKEN, or "" if neither is set.
+func resolveDOToken(token string) string {
+	if token == "" {
+		return os.Getenv(tokenEnv)
+	}
+	return token
+}
+
 // NewClusterClient builds a cluster client, reading the token from the argument
 // or $DIGITALOCEAN_ACCESS_TOKEN.
 func NewClusterClient(token string) (*ClusterClient, error) {
-	if token == "" {
-		token = os.Getenv(tokenEnv)
-	}
+	token = resolveDOToken(token)
 	if token == "" {
 		return nil, MissingCredentials(
 			fmt.Sprintf("pass --token or set $%s.", tokenEnv),

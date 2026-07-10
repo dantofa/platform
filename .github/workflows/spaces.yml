@@ -34,9 +34,10 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      # bws injects the Spaces keys (SPACES_ACCESS_KEY_ID / SPACES_SECRET_ACCESS_KEY)
-      # from the shared secrets project, then runs the shipped dctl (the S3 adapter)
-      # against real DigitalOcean Spaces.
+      # bws injects only the DigitalOcean token (DIGITALOCEAN_ACCESS_TOKEN) from
+      # the shared secrets project — no standing Spaces keys. dctl mints an
+      # ephemeral Spaces key from the token, runs the S3 op against real
+      # DigitalOcean Spaces, and revokes the key afterwards (even on error).
       - name: Create bucket
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
