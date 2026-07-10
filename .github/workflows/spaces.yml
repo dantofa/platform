@@ -1,0 +1,66 @@
+---
+name: spaces
+on:
+  pull_request:
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  # Globally-unique, DNS-safe bucket name scoped to this run (Spaces bucket names
+  # are global per region), so no pre-run cleanup is needed.
+  BUCKET: dctl-ci-${{ github.event.pull_request.number }}-${{ github.run_id }}
+jobs:
+  spaces:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: preview
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # ratchet:DeterminateSystems/nix-installer-action@v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # ratchet:nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'go.sum', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # bws injects the Spaces keys (SPACES_ACCESS_KEY_ID / SPACES_SECRET_ACCESS_KEY)
+      # from the shared secrets project, then runs the shipped dctl (the S3 adapter)
+      # against real DigitalOcean Spaces.
+      - name: Create bucket
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
+          nix run .#default -- digitalocean space create "$BUCKET"
+
+      - name: Verify bucket is listed
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
+          nix run .#default -- digitalocean space list | grep -qF "$BUCKET"
+
+      # Best-effort teardown: the bucket is empty and uniquely named, so a delete
+      # failure means create never happened (the job is already failing) — don't
+      # let cleanup mask the real error.
+      - name: Delete bucket
+        if: always()
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
+          nix run .#default -- digitalocean space delete "$BUCKET" || true
