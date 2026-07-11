@@ -5,8 +5,6 @@ on:
 permissions: {}
 env:
   FORCE_COLOR: ""
-  # Globally-unique, DNS-safe bucket name scoped to this run (Spaces bucket names
-  # are global per region), so no pre-run cleanup is needed.
   BUCKET: dctl-ci-${{ github.event.pull_request.number }}-${{ github.run_id }}
 jobs:
   spaces:
