@@ -50,6 +50,19 @@ func NewFromPath(path string) (*Client, error) {
 	return &Client{cs: cs}, nil
 }
 
+// EnsureNamespace creates the named Namespace if it does not already exist.
+// Idempotent: an existing namespace is a no-op.
+func (c *Client) EnsureNamespace(ctx context.Context, name string) error {
+	_, err := c.cs.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = c.cs.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+		}, metav1.CreateOptions{})
+		return err
+	}
+	return err
+}
+
 // ApplySecret creates or updates an Opaque Secret with the given data and
 // annotations (annotations are merged onto an existing Secret).
 func (c *Client) ApplySecret(ctx context.Context, namespace, name string, data map[string][]byte, annotations map[string]string) error {

@@ -61,7 +61,12 @@ func (s *CredentialStore) CurrentAccessKey(ctx context.Context) (string, error) 
 }
 
 // Store writes the credential (as a Velero credentials file) and the coordinates.
+// The target namespace (where Velero runs) is ensured first so the write does
+// not race the Flux-managed namespace.
 func (s *CredentialStore) Store(ctx context.Context, cred core.Credential, coords core.BucketCoordinates) error {
+	if err := s.kube.EnsureNamespace(ctx, s.namespace); err != nil {
+		return err
+	}
 	if err := s.kube.ApplySecret(
 		ctx, s.namespace, s.secretName,
 		map[string][]byte{credentialsKey: []byte(core.VeleroCredentialsFile(cred))},

@@ -1,0 +1,11 @@
+---
+# Reconciled by the `platform` Flux Kustomization that `dctl do cluster
+# bootstrap` registers (sourceRef: this repo, path: ./flux). No variable
+# substitution happens here; the cluster-specific values are substituted into
+# ./flux/velero by the nested `velero` Kustomization below.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - helmrepository.yaml
+  - velero.yaml

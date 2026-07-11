@@ -109,8 +109,9 @@ func newSpaceLinkCmd(region, token *string) *cobra.Command {
 		"DOKS cluster name whose kubeconfig to fetch via the DO token.")
 	f.StringVar(&kubeconfigPath, "kubeconfig", "",
 		"Kubeconfig path when --cluster is unset (defaults to $KUBECONFIG / ~/.kube/config).")
-	f.StringVar(&namespace, "namespace", "flux-system",
-		"Namespace for the credential Secret and coordinates ConfigMap.")
+	f.StringVar(&namespace, "namespace", "velero",
+		"Namespace for the credential Secret and coordinates ConfigMap (where "+
+			"Velero runs); created if absent.")
 	f.StringVar(&secretName, "secret-name", "",
 		"Credential Secret name (default "+doclient.DefaultSecretName+").")
 	f.StringVar(&configMapName, "configmap-name", "",

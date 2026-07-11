@@ -265,7 +265,7 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 	f.StringVar(&sourceBranch, "source-branch", fluxcore.DefaultSourceBranch, "Branch of the GitOps source.")
 	f.StringVar(&sourcePath, "source-path", fluxcore.DefaultSourcePath, "Path within the source that Flux reconciles.")
 	f.StringVar(&src, "source-name", fluxcore.DefaultSourceName, "Name of the Flux source and kustomization.")
-	f.StringVar(&namespace, "namespace", "flux-system", "Namespace for the credential Secret and coordinates ConfigMap.")
+	f.StringVar(&namespace, "namespace", "velero", "Namespace for the credential Secret and coordinates ConfigMap (where Velero runs); created if absent.")
 	f.StringVar(&secretName, "secret-name", "", "Credential Secret name (default "+doclient.DefaultSecretName+").")
 	f.StringVar(&configMapName, "configmap-name", "", "Coordinates ConfigMap name (default "+doclient.DefaultConfigMapName+").")
 	return cmd
