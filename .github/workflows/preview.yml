@@ -37,7 +37,7 @@ jobs:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
           nix develop --command
-          bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
           nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
 
       - name: Create preview cluster
@@ -45,11 +45,25 @@ jobs:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
           nix develop --command
-          bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
           nix run .#default -- digitalocean cluster create --name "$CLUSTER_NAME" --wait
 
+      - name: Update preview cluster
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster update "$CLUSTER_NAME" --tag ci-preview
+
+      - name: Fetch preview kubeconfig
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: |
+          nix develop --command bws run --project-id ${{ vars.BWS_PROJECT_ID }} -- nix run .#default -- digitalocean cluster connect "$CLUSTER_NAME" --output preview.kubeconfig
+          test -s preview.kubeconfig
+
       # TODO: payload testing goes here, between create and teardown:
-      #   - wait for the cluster to reach "running" and fetch its kubeconfig
       #   - deploy the payload
       #   - run the cluster tests against it
 
@@ -59,5 +73,5 @@ jobs:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
           nix develop --command
-          bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
           nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"

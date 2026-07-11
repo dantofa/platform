@@ -45,5 +45,5 @@ jobs:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
           nix develop --command
-          bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
           nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
