@@ -1,8 +1,5 @@
 ---
 name: teardown
-# Safety net: guarantee the per-PR preview cluster is gone once the PR is closed
-# or merged (the preview workflow only tears down on success, so a failed run can
-# leave a cluster behind). `closed` fires for both merge and plain close.
 on:
   pull_request:
     types: [closed]

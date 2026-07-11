@@ -2,7 +2,7 @@
 name: nix
 on:
   push:
-    branches: [main, master]
+    branches: [master] # warm cache on push to master
   pull_request:
 permissions: {}
 jobs:
