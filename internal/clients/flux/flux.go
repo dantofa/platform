@@ -1,6 +1,8 @@
 // Package flux is an adapter over the flux CLI (bundled in the package closure)
-// for installing Flux into a cluster and registering GitOps sources. It shells
-// out with an explicit --kubeconfig, so it targets a specific cluster.
+// for installing Flux into a cluster and composing GitOps sources and
+// kustomizations. It shells out with an explicit --kubeconfig when one is set,
+// so it targets a specific cluster (otherwise it uses the flux CLI's own
+// default resolution: $KUBECONFIG / ~/.kube/config).
 package flux
 
 import (
@@ -10,22 +12,32 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	fluxcore "github.com/dantofa/platform/internal/core/flux"
 )
 
 // fluxNamespace is where Flux installs its controllers and where sources /
 // kustomizations are created.
 const fluxNamespace = "flux-system"
 
+// Client satisfies the core flux Engine, running the flux CLI against a
+// specific cluster's kubeconfig.
+var _ fluxcore.Engine = (*Client)(nil)
+
 // Client runs the flux CLI against a specific cluster's kubeconfig.
 type Client struct {
 	kubeconfig string
 }
 
-// New builds a flux client bound to a kubeconfig path.
+// New builds a flux client bound to a kubeconfig path. An empty path defers to
+// the flux CLI's own kubeconfig resolution.
 func New(kubeconfigPath string) *Client { return &Client{kubeconfig: kubeconfigPath} }
 
 func (c *Client) run(ctx context.Context, args ...string) error {
-	full := append([]string{"--kubeconfig", c.kubeconfig}, args...)
+	full := args
+	if c.kubeconfig != "" {
+		full = append([]string{"--kubeconfig", c.kubeconfig}, args...)
+	}
 	cmd := exec.CommandContext(ctx, "flux", full...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -59,10 +71,22 @@ func (c *Client) CreateGitSource(ctx context.Context, name, url, branch string) 
 		"--namespace", fluxNamespace)
 }
 
+// DeleteGitSource removes a GitRepository source.
+func (c *Client) DeleteGitSource(ctx context.Context, name string) error {
+	return c.run(ctx, "delete", "source", "git", name,
+		"--silent", "--namespace", fluxNamespace)
+}
+
 // CreateKustomization registers (create-or-update) a Kustomization reconciling
 // the given path from the named GitRepository source.
 func (c *Client) CreateKustomization(ctx context.Context, name, source, path string) error {
 	return c.run(ctx, "create", "kustomization", name,
 		"--source", "GitRepository/"+source, "--path", path,
 		"--prune=true", "--interval", "10m", "--namespace", fluxNamespace)
+}
+
+// DeleteKustomization removes a Kustomization.
+func (c *Client) DeleteKustomization(ctx context.Context, name string) error {
+	return c.run(ctx, "delete", "kustomization", name,
+		"--silent", "--namespace", fluxNamespace)
 }

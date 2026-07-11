@@ -8,9 +8,10 @@ import (
 	"github.com/spf13/cobra"
 
 	doclient "github.com/dantofa/platform/internal/clients/digitalocean"
-	"github.com/dantofa/platform/internal/clients/flux"
+	fluxclient "github.com/dantofa/platform/internal/clients/flux"
 	"github.com/dantofa/platform/internal/clients/kube"
 	docore "github.com/dantofa/platform/internal/core/digitalocean"
+	fluxcore "github.com/dantofa/platform/internal/core/flux"
 	"github.com/dantofa/platform/internal/render"
 )
 
@@ -242,22 +243,17 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 			}
 
 			// 2. Install Flux and register the platform source + kustomization.
-			fx := flux.New(kubePath)
-			for _, step := range []func() error{
-				func() error { return fx.Install(ctx, fluxVersion) },
-				func() error { return fx.CreateGitSource(ctx, src, sourceURL, sourceBranch) },
-				func() error { return fx.CreateKustomization(ctx, src, src, sourcePath) },
-			} {
-				if err := step(); err != nil {
-					return render.Fail(err)
-				}
+			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), fluxVersion,
+				fluxcore.SourceSpec{Name: src, URL: sourceURL, Branch: sourceBranch}, sourcePath)
+			if err != nil {
+				return render.Fail(err)
 			}
 
 			return render.JSON(map[string]string{
 				"cluster":     cluster,
 				"bucket":      bucket,
-				"flux_source": src,
-				"flux_path":   sourcePath,
+				"flux_source": res.Source,
+				"flux_path":   res.Path,
 			})
 		},
 	}
@@ -265,10 +261,10 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 	f.StringVar(&bucket, "bucket", "", "Backup bucket name (default <cluster>-backup).")
 	f.StringVar(&region, "region", "", "Spaces region (defaults to $DIGITALOCEAN_SPACES_REGION / nyc3).")
 	f.StringVar(&fluxVersion, "flux-version", "", "Flux version to install (default: the bundled flux CLI's version).")
-	f.StringVar(&sourceURL, "source-url", "https://github.com/dantofa/platform", "Git URL of the GitOps source.")
-	f.StringVar(&sourceBranch, "source-branch", "master", "Branch of the GitOps source.")
-	f.StringVar(&sourcePath, "source-path", "./flux", "Path within the source that Flux reconciles.")
-	f.StringVar(&src, "source-name", "platform", "Name of the Flux source and kustomization.")
+	f.StringVar(&sourceURL, "source-url", fluxcore.DefaultSourceURL, "Git URL of the GitOps source.")
+	f.StringVar(&sourceBranch, "source-branch", fluxcore.DefaultSourceBranch, "Branch of the GitOps source.")
+	f.StringVar(&sourcePath, "source-path", fluxcore.DefaultSourcePath, "Path within the source that Flux reconciles.")
+	f.StringVar(&src, "source-name", fluxcore.DefaultSourceName, "Name of the Flux source and kustomization.")
 	f.StringVar(&namespace, "namespace", "flux-system", "Namespace for the credential Secret and coordinates ConfigMap.")
 	f.StringVar(&secretName, "secret-name", "", "Credential Secret name (default "+doclient.DefaultSecretName+").")
 	f.StringVar(&configMapName, "configmap-name", "", "Coordinates ConfigMap name (default "+doclient.DefaultConfigMapName+").")

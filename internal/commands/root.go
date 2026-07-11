@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dantofa/platform/internal/commands/digitalocean"
+	fluxcmd "github.com/dantofa/platform/internal/commands/flux"
 	"github.com/dantofa/platform/internal/commands/local"
 	"github.com/dantofa/platform/internal/render"
 	"github.com/dantofa/platform/internal/version"
@@ -36,6 +37,7 @@ func NewRootCmd() *cobra.Command {
 	root.SetVersionTemplate("{{.Version}}\n")
 
 	root.AddCommand(digitalocean.NewCmd())
+	root.AddCommand(fluxcmd.NewCmd())
 	root.AddCommand(local.NewCmd())
 	return root
 }
