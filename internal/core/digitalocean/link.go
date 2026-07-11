@@ -87,3 +87,41 @@ func VeleroCredentialsFile(c Credential) string {
 		c.AccessKey, c.SecretKey,
 	)
 }
+
+// CredentialStore persists a Spaces credential (and the bucket coordinates) into
+// a cluster and reports the access key currently stored there, so rotation can
+// revoke the superseded one. Implemented against Kubernetes — the DO token never
+// reaches it.
+type CredentialStore interface {
+	// CurrentAccessKey returns the access key id currently stored, or "" if none.
+	CurrentAccessKey(ctx context.Context) (string, error)
+	// Store writes the credential and bucket coordinates into the cluster.
+	Store(ctx context.Context, cred Credential, coords BucketCoordinates) error
+}
+
+// LinkAndStore ensures the versioned bucket exists, mints a fresh bucket-scoped
+// credential, persists it into the cluster, and only then revokes the
+// previously-stored credential. Idempotent, and this is also the rotate path:
+// the new credential is stored before the old is revoked, so an interrupted run
+// never leaves the cluster without a usable key.
+func LinkAndStore(ctx context.Context, p BucketProvisioner, store CredentialStore, bucket string) (LinkResult, error) {
+	prior, err := store.CurrentAccessKey(ctx)
+	if err != nil {
+		return LinkResult{}, err
+	}
+	res, err := Link(ctx, p, bucket)
+	if err != nil {
+		return LinkResult{}, err
+	}
+	if err := store.Store(ctx, res.Credential, res.Coordinates); err != nil {
+		// The new key exists in DO but isn't persisted; revoke it (best effort)
+		// rather than leak it, and leave the prior key intact so the cluster
+		// keeps a working credential.
+		_ = p.RevokeCredential(ctx, res.Credential.AccessKey)
+		return LinkResult{}, err
+	}
+	if err := RevokePrior(ctx, p, prior); err != nil {
+		return res, err
+	}
+	return res, nil
+}

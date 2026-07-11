@@ -223,19 +223,6 @@ func (c *SpacesClient) RevokeCredential(ctx context.Context, accessKey string) e
 	return nil
 }
 
-// alreadyOwned reports whether an S3 CreateBucket error means the bucket already
-// exists under our ownership (so EnsureBucket can treat it as success).
-func alreadyOwned(err error) bool {
-	var api smithy.APIError
-	if errors.As(err, &api) {
-		switch api.ErrorCode() {
-		case "BucketAlreadyOwnedByYou", "BucketAlreadyExists":
-			return true
-		}
-	}
-	return false
-}
-
 // retry runs an S3 op, retrying transient auth failures when using an ephemeral
 // key (a freshly-minted Spaces key can take a few seconds to become valid).
 // Static credentials are called once, so a genuine auth error isn't masked.
@@ -251,6 +238,19 @@ func (c *SpacesClient) retry(fn func() error) error {
 		time.Sleep(time.Duration(attempt+1) * time.Second)
 	}
 	return err
+}
+
+// alreadyOwned reports whether an S3 CreateBucket error means the bucket already
+// exists under our ownership (so EnsureBucket can treat it as success).
+func alreadyOwned(err error) bool {
+	var api smithy.APIError
+	if errors.As(err, &api) {
+		switch api.ErrorCode() {
+		case "BucketAlreadyOwnedByYou", "BucketAlreadyExists":
+			return true
+		}
+	}
+	return false
 }
 
 func transientAuth(err error) bool {

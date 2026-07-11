@@ -3,6 +3,7 @@ package digitalocean
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -15,6 +16,13 @@ type fakeProvisioner struct {
 	ensureErr error
 	credErr   error
 	revokeErr error
+	events    *[]string // optional ordering recorder shared with a fakeStore
+}
+
+func (f *fakeProvisioner) record(e string) {
+	if f.events != nil {
+		*f.events = append(*f.events, e)
+	}
 }
 
 func (f *fakeProvisioner) EnsureBucket(_ context.Context, name string) (BucketCoordinates, error) {
@@ -27,6 +35,7 @@ func (f *fakeProvisioner) EnsureBucket(_ context.Context, name string) (BucketCo
 
 func (f *fakeProvisioner) CreateScopedCredential(_ context.Context, bucket string) (Credential, error) {
 	f.scopedFor = bucket
+	f.record("mint")
 	if f.credErr != nil {
 		return Credential{}, f.credErr
 	}
@@ -35,6 +44,7 @@ func (f *fakeProvisioner) CreateScopedCredential(_ context.Context, bucket strin
 
 func (f *fakeProvisioner) RevokeCredential(_ context.Context, accessKey string) error {
 	f.revoked = accessKey
+	f.record("revoke:" + accessKey)
 	return f.revokeErr
 }
 
@@ -93,5 +103,73 @@ func TestConfigMapData(t *testing.T) {
 	m := c.ConfigMapData()
 	if m["bucket"] != "backup" || m["region"] != "nyc3" || m["endpoint"] != c.Endpoint {
 		t.Errorf("wrong config map data: %v", m)
+	}
+}
+
+type fakeStore struct {
+	prior    string
+	priorErr error
+	storeErr error
+	stored   Credential
+	events   *[]string
+}
+
+func (s *fakeStore) CurrentAccessKey(context.Context) (string, error) {
+	if s.events != nil {
+		*s.events = append(*s.events, "current")
+	}
+	return s.prior, s.priorErr
+}
+
+func (s *fakeStore) Store(_ context.Context, cred Credential, _ BucketCoordinates) error {
+	if s.events != nil {
+		*s.events = append(*s.events, "store")
+	}
+	s.stored = cred
+	return s.storeErr
+}
+
+func TestLinkAndStoreRotatesInOrder(t *testing.T) {
+	var events []string
+	p := &fakeProvisioner{cred: Credential{AccessKey: "AK2", SecretKey: "SK2"}, events: &events}
+	s := &fakeStore{prior: "AK1", events: &events}
+	res, err := LinkAndStore(context.Background(), p, s, "backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.stored != p.cred {
+		t.Errorf("stored wrong credential: %+v", s.stored)
+	}
+	if res.Credential != p.cred {
+		t.Errorf("wrong result credential: %+v", res.Credential)
+	}
+	// The new key must be persisted before the old one is revoked.
+	want := []string{"current", "mint", "store", "revoke:AK1"}
+	if !reflect.DeepEqual(events, want) {
+		t.Errorf("wrong ordering:\n got %v\nwant %v", events, want)
+	}
+}
+
+func TestLinkAndStoreFirstLinkDoesNotRevoke(t *testing.T) {
+	p := &fakeProvisioner{cred: Credential{AccessKey: "AK1"}}
+	s := &fakeStore{prior: ""}
+	if _, err := LinkAndStore(context.Background(), p, s, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if p.revoked != "" {
+		t.Errorf("first link must not revoke, got %q", p.revoked)
+	}
+}
+
+func TestLinkAndStoreRevokesNewKeyOnStoreFailure(t *testing.T) {
+	sentinel := errors.New("store boom")
+	p := &fakeProvisioner{cred: Credential{AccessKey: "AK2"}}
+	s := &fakeStore{prior: "AK1", storeErr: sentinel}
+	if _, err := LinkAndStore(context.Background(), p, s, "b"); !errors.Is(err, sentinel) {
+		t.Fatalf("expected store error, got %v", err)
+	}
+	// The un-persisted new key is cleaned up; the prior key is left intact.
+	if p.revoked != "AK2" {
+		t.Errorf("expected un-persisted key AK2 to be revoked, got %q", p.revoked)
 	}
 }
