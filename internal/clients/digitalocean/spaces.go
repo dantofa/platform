@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/digitalocean/godo"
 
@@ -33,9 +34,21 @@ const (
 // are optional and the DO token alone suffices.
 type SpacesClient struct {
 	s3        *s3.Client
-	doClient  *godo.Client // set only for the ephemeral-credential path
+	region    string
+	doClient  *godo.Client // set only when built from a DO token
 	ephemeral string       // ephemeral access key id to revoke on Close (else "")
 }
+
+func spacesEndpoint(region string) string {
+	return fmt.Sprintf("https://%s.digitaloceanspaces.com", region)
+}
+
+// SpacesClient satisfies both the bucket CRUD surface and the provisioning
+// surface the bootstrap/link flow needs.
+var (
+	_ core.SpacesAPI         = (*SpacesClient)(nil)
+	_ core.BucketProvisioner = (*SpacesClient)(nil)
+)
 
 func resolveRegion(region string) string {
 	if region == "" {
@@ -64,7 +77,7 @@ func NewSpacesClient(ctx context.Context, region, token string) (*SpacesClient, 
 
 	key, secret := os.Getenv(spacesKeyEnv), os.Getenv(spacesSecretEnv)
 	if key != "" && secret != "" {
-		return &SpacesClient{s3: newS3(region, key, secret)}, nil
+		return &SpacesClient{s3: newS3(region, key, secret), region: region}, nil
 	}
 
 	token = resolveDOToken(token)
@@ -84,6 +97,7 @@ func NewSpacesClient(ctx context.Context, region, token string) (*SpacesClient, 
 	}
 	return &SpacesClient{
 		s3:        newS3(region, created.AccessKey, created.SecretKey),
+		region:    region,
 		doClient:  doClient,
 		ephemeral: created.AccessKey,
 	}, nil
@@ -149,6 +163,77 @@ func (c *SpacesClient) DeleteBucket(ctx context.Context, name string) error {
 		return apiError(err)
 	}
 	return nil
+}
+
+// EnsureBucket creates the bucket if absent and enables versioning. Idempotent:
+// a bucket we already own is not an error. Implements core.BucketProvisioner.
+func (c *SpacesClient) EnsureBucket(ctx context.Context, name string) (core.BucketCoordinates, error) {
+	err := c.retry(func() error {
+		_, err := c.s3.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(name)})
+		return err
+	})
+	if err != nil && !alreadyOwned(err) {
+		return core.BucketCoordinates{}, apiError(err)
+	}
+	if _, err := c.s3.PutBucketVersioning(ctx, &s3.PutBucketVersioningInput{
+		Bucket: aws.String(name),
+		VersioningConfiguration: &s3types.VersioningConfiguration{
+			Status: s3types.BucketVersioningStatusEnabled,
+		},
+	}); err != nil {
+		return core.BucketCoordinates{}, apiError(err)
+	}
+	return core.BucketCoordinates{
+		Bucket:   name,
+		Region:   c.region,
+		Endpoint: spacesEndpoint(c.region),
+	}, nil
+}
+
+// CreateScopedCredential mints a Spaces key scoped to the one bucket with
+// read/write/delete permission (the narrowest DO Spaces offers). Requires a DO
+// token. Implements core.BucketProvisioner.
+func (c *SpacesClient) CreateScopedCredential(ctx context.Context, bucket string) (core.Credential, error) {
+	if c.doClient == nil {
+		return core.Credential{}, MissingCredentials(fmt.Sprintf(
+			"a DigitalOcean token (--token / $%s) is required to mint a scoped Spaces key.", tokenEnv,
+		))
+	}
+	created, _, err := c.doClient.SpacesKeys.Create(ctx, &godo.SpacesKeyCreateRequest{
+		Name:   fmt.Sprintf("dctl-%s-%d", bucket, time.Now().Unix()),
+		Grants: []*godo.Grant{{Bucket: bucket, Permission: godo.SpacesKeyReadWrite}},
+	})
+	if err != nil {
+		return core.Credential{}, apiError(err)
+	}
+	return core.Credential{AccessKey: created.AccessKey, SecretKey: created.SecretKey}, nil
+}
+
+// RevokeCredential deletes a Spaces key by access key id. Requires a DO token.
+// Implements core.BucketProvisioner.
+func (c *SpacesClient) RevokeCredential(ctx context.Context, accessKey string) error {
+	if c.doClient == nil {
+		return MissingCredentials(fmt.Sprintf(
+			"a DigitalOcean token (--token / $%s) is required to revoke a Spaces key.", tokenEnv,
+		))
+	}
+	if _, err := c.doClient.SpacesKeys.Delete(ctx, accessKey); err != nil {
+		return apiError(err)
+	}
+	return nil
+}
+
+// alreadyOwned reports whether an S3 CreateBucket error means the bucket already
+// exists under our ownership (so EnsureBucket can treat it as success).
+func alreadyOwned(err error) bool {
+	var api smithy.APIError
+	if errors.As(err, &api) {
+		switch api.ErrorCode() {
+		case "BucketAlreadyOwnedByYou", "BucketAlreadyExists":
+			return true
+		}
+	}
+	return false
 }
 
 // retry runs an S3 op, retrying transient auth failures when using an ephemeral

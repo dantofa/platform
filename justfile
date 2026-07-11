@@ -39,7 +39,9 @@ lint: shellcheck
   go vet ./...
   golangci-lint run
   # Whole-program dead-code (quality, not security): fail on any unreachable func.
-  dead="$(go tool deadcode ./...)"
+  # `-test` counts test-exercised code as reachable, so core built bottom-up (with
+  # tests) before its command consumer isn't flagged as dead mid-development.
+  dead="$(go tool deadcode -test ./...)"
   if [ -n "$dead" ]; then echo "deadcode: unreachable functions:"; echo "$dead"; exit 1; fi
   actionlint
   yamllint .
