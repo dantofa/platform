@@ -1,4 +1,6 @@
-package commands
+// Package local holds the `local` command group: kind development clusters
+// wired to an internal OCI registry, over the local clients.
+package local
 
 import (
 	"github.com/spf13/cobra"
@@ -8,9 +10,10 @@ import (
 	"github.com/dantofa/platform/internal/render"
 )
 
-// newLocalCmd builds the `local` resource group (registered only when kind is
-// on PATH — see NewRootCmd).
-func newLocalCmd() *cobra.Command {
+// NewCmd builds the `local` resource group. The Nix package bundles the
+// runtime CLIs (kind/flux/docker) on PATH, so the group is always present; a
+// missing tool surfaces a clear "not installed" error from the command.
+func NewCmd() *cobra.Command {
 	local := &cobra.Command{
 		Use:          "local",
 		Short:        "Manage local (kind) development clusters.",
@@ -51,8 +54,7 @@ func newLocalListCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			clusters, err := localcore.ListClusters(cmd.Context(), localclient.NewKindClient())
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			return render.JSON(clusters)
 		},
@@ -72,8 +74,7 @@ func newLocalCreateCmd() *cobra.Command {
 			result, err := localcore.CreateCluster(cmd.Context(), localclient.NewKindClient(),
 				nameArg(args), registryName, registryPort)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			return render.JSON(result)
 		},
@@ -99,8 +100,7 @@ func newLocalPushCmd() *cobra.Command {
 			result, err := localcore.PushArtifact(cmd.Context(), localclient.NewKindClient(),
 				name, tag, path, registryPort)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			return render.JSON(result)
 		},
@@ -120,8 +120,7 @@ func newLocalDeleteCmd() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := localcore.DeleteCluster(cmd.Context(), localclient.NewKindClient(), nameArg(args)); err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			return nil
 		},
@@ -138,12 +137,10 @@ func newLocalConnectCmd() *cobra.Command {
 			name := nameArg(args)
 			kubeconfig, err := localcore.GetKubeconfig(cmd.Context(), localclient.NewKindClient(), name)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			if err := render.WriteOwnerOnly(output, kubeconfig); err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			return render.JSON(map[string]string{"name": name, "kubeconfig": output})
 		},

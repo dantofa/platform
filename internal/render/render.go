@@ -22,6 +22,18 @@ func JSON(v any) error {
 	return err
 }
 
+// ErrHandled marks an error whose output has already been rendered (via Error /
+// Fail), so the top-level runner only sets a non-zero exit code without printing
+// it again.
+var ErrHandled = errors.New("handled")
+
+// Fail renders err to stderr and returns ErrHandled — the standard "render and
+// bail" a command uses for a user-facing error.
+func Fail(err error) error {
+	Error(err)
+	return ErrHandled
+}
+
 // payloader is implemented by provider errors that carry a raw error body to be
 // surfaced to the user verbatim (e.g. the DigitalOcean API error payload).
 type payloader interface{ Payload() any }

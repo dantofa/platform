@@ -1,6 +1,8 @@
 // Package commands is the presentation layer: the cobra command tree. Commands
 // only parse flags, call the framework-free core (through interfaces the client
-// adapters satisfy), and render results via internal/render.
+// adapters satisfy), and render results via internal/render. Each resource
+// group lives in its own subpackage (digitalocean/, local/); this package only
+// assembles the root and runs it.
 package commands
 
 import (
@@ -10,13 +12,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dantofa/platform/internal/commands/digitalocean"
+	"github.com/dantofa/platform/internal/commands/local"
+	"github.com/dantofa/platform/internal/render"
 	"github.com/dantofa/platform/internal/version"
 )
-
-// errHandled marks an error whose output has already been rendered (via
-// render.Error) so the top-level Execute doesn't print it again — it only sets
-// the non-zero exit code.
-var errHandled = errors.New("handled")
 
 // NewRootCmd builds the dctl root command tree. Both resource groups are always
 // present: the Nix package bundles the local group's runtime CLIs (kind/flux/
@@ -35,15 +35,15 @@ func NewRootCmd() *cobra.Command {
 	}
 	root.SetVersionTemplate("{{.Version}}\n")
 
-	root.AddCommand(newDOCmd())
-	root.AddCommand(newLocalCmd())
+	root.AddCommand(digitalocean.NewCmd())
+	root.AddCommand(local.NewCmd())
 	return root
 }
 
 // Execute runs the root command and returns the process exit code.
 func Execute() int {
 	if err := NewRootCmd().Execute(); err != nil {
-		if !errors.Is(err, errHandled) {
+		if !errors.Is(err, render.ErrHandled) {
 			// A cobra/usage error that a command didn't render itself.
 			fmt.Fprintln(os.Stderr, err)
 		}

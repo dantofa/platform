@@ -1,9 +1,8 @@
-package commands
+package digitalocean
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -44,13 +43,11 @@ func newClusterListCmd(token *string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := doclient.NewClusterClient(*token)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			clusters, err := docore.ListClusters(cmd.Context(), client)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			return render.JSON(clusters)
 		},
@@ -75,22 +72,19 @@ func newClusterCreateCmd(token *string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := doclient.NewClusterClient(*token)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			pool := docore.BuildNodePool("system", poolSize, poolCount, poolMin, poolMax)
 			spec := docore.BuildCreateSpec(name, region, version, pool, tags, ha)
 			result, err := docore.CreateCluster(cmd.Context(), client, spec)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			if wait {
 				result, err = docore.WaitForRunning(cmd.Context(), client, name,
 					time.Duration(waitTimeout*float64(time.Second)), docore.DefaultPollInterval)
 				if err != nil {
-					render.Error(err)
-					return errHandled
+					return render.Fail(err)
 				}
 			}
 			return render.JSON(result)
@@ -137,14 +131,12 @@ func newClusterUpdateCmd(token *string) *cobra.Command {
 			}
 			client, err := doclient.NewClusterClient(*token)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			spec := docore.BuildUpdateSpec(tagsPtr, ha)
 			result, err := docore.UpdateCluster(cmd.Context(), client, args[0], spec)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			return render.JSON(result)
 		},
@@ -165,17 +157,14 @@ func newClusterConnectCmd(token *string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := doclient.NewClusterClient(*token)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			kubeconfig, err := docore.GetKubeconfig(cmd.Context(), client, args[0])
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			if err := render.WriteOwnerOnly(output, kubeconfig); err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			return render.JSON(map[string]string{"name": args[0], "kubeconfig": output})
 		},
@@ -192,32 +181,14 @@ func newClusterDeleteCmd(token *string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := doclient.NewClusterClient(*token)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			if _, err := docore.DeleteCluster(cmd.Context(), client, args[0]); err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			return nil
 		},
 	}
-}
-
-// writeTempKubeconfig writes kubeconfig bytes to a private temp file for tools
-// (the flux CLI) that need a path, returning the path and a cleanup func.
-func writeTempKubeconfig(data []byte) (string, func(), error) {
-	f, err := os.CreateTemp("", "dctl-kubeconfig-*.yaml")
-	if err != nil {
-		return "", nil, err
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-		return "", nil, err
-	}
-	_ = f.Close()
-	return f.Name(), func() { _ = os.Remove(f.Name()) }, nil
 }
 
 func newClusterBootstrapCmd(token *string) *cobra.Command {
@@ -245,24 +216,20 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 			// flux CLI can consume).
 			cc, err := doclient.NewClusterClient(*token)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			kubeconfig, err := docore.GetKubeconfig(ctx, cc, cluster)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			kubePath, cleanup, err := writeTempKubeconfig([]byte(kubeconfig))
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 			defer cleanup()
 			kc, err := kube.NewFromPath(kubePath)
 			if err != nil {
-				render.Error(err)
-				return errHandled
+				return render.Fail(err)
 			}
 
 			// 1. Link the backup bucket + credential into the cluster.
@@ -282,8 +249,7 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 				func() error { return fx.CreateKustomization(ctx, src, src, sourcePath) },
 			} {
 				if err := step(); err != nil {
-					render.Error(err)
-					return errHandled
+					return render.Fail(err)
 				}
 			}
 
