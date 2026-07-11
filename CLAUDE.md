@@ -3,11 +3,6 @@
 Guidance for working in this repository. Read this before adding dependencies,
 tooling, or CI.
 
-> **Migration in progress.** This project is being rewritten from a Python
-> (Typer) CLI to **Go**. Phase 1 (toolchain, flake, packaging) is done; the
-> command tree, `core`, and `clients` (Phase 2) are being ported. Sections
-> describing those layers state the *intended* Go structure.
-
 ## What this is
 
 `dantofa/platform` is a Go tool — the `dctl` control CLI (and, later, its
