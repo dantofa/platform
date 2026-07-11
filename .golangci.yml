@@ -1,0 +1,23 @@
+---
+version: "2"
+
+# `default: standard` enables errcheck, govet, ineffassign, staticcheck and
+# unused (the per-package dead-code / unused-identifier check). We add depguard
+# to enforce the layered architecture — the replacement for the Python
+# import-linter contract: internal/core stays framework-free and must not depend
+# on the CLI framework or the clients (adapters) layer.
+linters:
+  default: standard
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        core-is-framework-free:
+          files:
+            - "**/internal/core/**"
+          deny:
+            - pkg: github.com/spf13/cobra
+              desc: "core is the framework-free layer: no CLI framework imports"
+            - pkg: github.com/dantofa/platform/internal/clients
+              desc: "core must not import clients; invert the dependency via interfaces defined in core"

@@ -3,196 +3,161 @@
 Guidance for working in this repository. Read this before adding dependencies,
 tooling, or CI.
 
+> **Migration in progress.** This project is being rewritten from a Python
+> (Typer) CLI to **Go**. Phase 1 (toolchain, flake, packaging) is done; the
+> command tree, `core`, and `clients` (Phase 2) are being ported. Sections
+> describing those layers state the *intended* Go structure.
+
 ## What this is
 
-`dantofa-saas` is a Python CLI built with [Typer](https://typer.tiangolo.com/).
-The Typer `app` lives in `src/dantofa/cli/main.py`, launched by `run()`.
+`dantofa/platform` is a Go tool — the `dctl` control CLI (and, later, its
+Kubernetes operator) — that provisions and manages DigitalOcean / local (kind)
+clusters and their platform infrastructure. The binary is `dctl`
+(`cmd/dctl`), built with [cobra](https://github.com/spf13/cobra). Distribution
+is **Nix-flake-only** (no pip/uvx channel).
 
-It ships two console entry points (`[project.scripts]`), both pointing at
-`dantofa.cli.main:run`:
+## Layout (three layers → Go packages)
 
-- `dctl` — short, ergonomic name for installed use.
-- `dantofa.cli` — alternate executable name. Since the distribution is named
-  `dantofa-saas`, `uvx` / `pipx run` need `--from dantofa-saas` (e.g.
-  `uvx --from dantofa-saas dantofa.cli`); the executable no longer shares the
-  distribution name.
-
-## Layout
-
-- `src/dantofa/cli/` — **presentation layer**: the Typer app and commands only.
-- `src/dantofa/core/` — **application logic**: framework-free modules, one per
-  concern (e.g. `greeting.py`, `meta.py`). No `typer` import here.
-- **PEP 420 throughout: there are no `__init__.py` files anywhere.** `dantofa`
-  and every subpackage (`cli/`, `core/`) are implicit namespace packages. Do
-  not add an `__init__.py` — keep new subpackages namespace-style too.
-- `tests/` — pytest suite: `test_main.py` exercises the CLI via Typer's
-  `CliRunner`; `test_core.py` unit-tests the logic directly.
-- Build backend is `hatchling`; the wheel is built from `src/dantofa`.
+- `cmd/dctl/` — the binary entrypoint; wires the cobra root and injects the
+  build-stamped version (`internal/version`).
+- `internal/commands/` — **presentation**: cobra commands only.
+- `internal/core/` — **application logic**: framework-free (domain types, Go
+  interfaces, the opinionated builders). Imports neither cobra nor `clients`.
+- `internal/clients/` — **adapters**: `godo` (DO REST / clusters),
+  `aws-sdk-go-v2` (Spaces S3), `os/exec` (kind/flux/docker/git). SDK types live
+  here and never leak into `core`.
 
 ## Architecture: thin command layer (important)
 
-**Typer commands and subcommands MUST NOT implement application logic.** A
-command/callback only: declares options/arguments, calls a function from a
-`dantofa.core` module, and renders the result (`typer.echo`, exit codes). All
-real work — computation, I/O, validation, external calls — lives in
-`dantofa.core`, which never imports `typer` or anything CLI-specific.
+**Cobra commands MUST NOT implement application logic.** A command only declares
+flags/args, calls a function from `internal/core` (through an interface the
+`clients` adapter satisfies), and renders the result (output + exit code). All
+real work — computation, I/O, validation, external calls — lives in `core`,
+which never imports cobra or a client SDK.
 
 Why: the logic stays unit-testable without the CLI, and the CLI is a swappable
-adapter (a future API/TUI could reuse the same core). When adding a feature,
-write the logic as a `core` function first, then add a thin command that calls
-it. If a command body contains anything beyond delegation and rendering, it is
-in the wrong layer.
+adapter (the future operator reuses the same `core`). Write the `core` function
+first, then a thin command that calls it.
 
-This is **enforced**, not just convention: `import-linter` (config in
-`[tool.importlinter]`, run as `lint-imports` inside `just lint`) has a forbidden
-contract that fails CI if anything under `dantofa.core` imports `dantofa.cli`,
-`typer`, or `click`.
+This is **enforced**: golangci-lint's `depguard` (config in `.golangci.yml`)
+fails CI if anything under `internal/core` imports the CLI framework or
+`internal/clients`. It replaces the Python `import-linter` contract.
+
+Idiom: use **methods** where a type must satisfy an interface or carry state
+(the client adapters); use **free functions** (incl. generics / `samber/lo`) for
+stateless transforms and helpers.
 
 ### Opinionated core builders
 
-The DigitalOcean cluster body builders in `dantofa.core.digitalocean.clusters`
-(`build_node_pool`, `build_create_body`, `build_update_body`) are deliberately
-**opinionated** — they are *not* neutral DO API wrappers. They bake fixed product
-invariants into every payload (a single autoscaling node pool; auto-upgrade and
-surge-upgrade always enabled) rather than exposing them as caller choices, and HA
-is enable-only (never emitted as `false`). This keeps the invariants in one place
-and makes them impossible to bypass from any caller, at the cost of generality (a
-future API/TUI reusing core inherits these defaults). Do not "tidy" these into
-pass-through builders: if a caller ever legitimately needs to *not* enforce an
-invariant, add a parameter deliberately rather than assuming the builder is
-neutral.
+The DigitalOcean cluster spec builders in `core` are deliberately **opinionated**
+— not neutral DO API wrappers. They bake fixed product invariants into every
+spec (a single autoscaling node pool; auto-upgrade and surge-upgrade always
+enabled; HA enable-only, never emitted as `false`) rather than exposing them as
+caller choices. `core` builds a **neutral spec** with the invariants baked in;
+the `clients` adapter mechanically maps that spec to the `godo` request type
+(keeping godo out of `core` and the invariants impossible to bypass from any
+adapter). Do not "tidy" these into pass-through builders: if a caller ever
+legitimately needs to *not* enforce an invariant, add a parameter deliberately.
 
 ## The two-tier tooling rule (important)
 
-Dependencies are split by purpose, and new tools must follow the same split:
+Dependencies are split by purpose:
 
 - **Generic, language-agnostic dev tools live in the flake dev shell**
-  (`devShells.default` in `flake.nix`) — e.g. `uv`, `just`, `actionlint`,
-  `yamllint`, `shellcheck`, `gh`, `ratchet`, plus the runtime CLIs (`kind`,
-  `flux`, `docker`) and `kubectl`/`bws`. They come from the **same pinned
-  nixpkgs as the package** (one resolver, one lockfile — no separate
-  `devbox.lock`), and are what CI uses too via `nix develop --command`, so
-  versions match local dev exactly. Enter it with `nix develop` (or `direnv`).
-  The runtime CLIs are shared with the package through the `runtimeTools` list,
-  so there is a single source for them.
-- **Python project tools go through uv** as dev dependencies
-  (`[dependency-groups].dev` in `pyproject.toml`) — e.g. `ruff`, `basedpyright`,
-  `skylos`, `pytest`, `pre-commit`. Add them with `uv add --dev <tool>`, never
-  by hand-editing the dependency list.
+  (`devShells.default` in `flake.nix`) — the Go toolchain (`go`, `gopls`,
+  `golangci-lint`, `gofumpt`, `govulncheck`) plus `just`, `actionlint`,
+  `yamllint`, `shellcheck`, `gh`, `ratchet`, `pre-commit`, `kubectl`, `bws`, and
+  the runtime CLIs (`kind`, `flux`, `docker`, `git`). All from the **same pinned
+  nixpkgs as the package** (one resolver, one lockfile), and what CI uses too via
+  `nix develop --command`. Enter with `nix develop` (or `direnv`). The runtime
+  CLIs are shared with the package via the `runtimeTools` list — one source.
+- **Go module deps go through `go.mod`/`go.sum`** — add with `go get`, tidy with
+  `go mod tidy`. Analyzer tools that are part of the project (e.g. `deadcode`)
+  are pinned via the go.mod **`tool` directive** and run with `go tool`.
 
-Rule of thumb: *if it analyzes or runs the Python project, it's a uv dev
-dependency; if it's general-purpose tooling for the environment, it's a flake
-dev-shell package.*
-
-Runtime dependencies (things the CLI imports at runtime, like `typer`) go in
-`[project].dependencies`, added via `uv add <pkg>`.
+Rule of thumb: *if it's the environment/toolchain, it's a flake dev-shell
+package; if it's a Go dependency of the code, it's in `go.mod`.*
 
 ## Commands — always via `just`
 
-The justfile is the single source of truth for how tools are invoked. Don't
-duplicate these commands elsewhere (CI and pre-commit both delegate to them):
+The justfile is the single source of truth for how tools are invoked (CI and
+pre-commit both delegate to it):
 
-- `just run [args]` — run the CLI.
-- `just test [args]` — run pytest.
-- `just build` — build the sdist + wheel (`uv build`) into `dist/`. The `build`
-  workflow runs this on CI and smoke-tests the wheel via `uvx`.
-- `just lint` — `ruff check` + `basedpyright` + `actionlint` + `yamllint` +
-  `shellcheck` (the latter run on this justfile's shebang recipes; line recipes
-  and any with `just` interpolations are skipped as they aren't standalone shell).
-- `just format [args]` — `ruff format`.
-- `just sast` — skylos security scan (`--danger --secrets --sca`).
+- `just run [args]` — `go run ./cmd/dctl`.
+- `just test [args]` — `go test ./...`.
+- `just build` — `go build` into `dist/dctl`, ldflags-stamping the source-derived
+  version. CI's `build` workflow runs this and smoke-tests the binary.
+- `just lint` — `gofumpt` (format check) + `go vet` + `golangci-lint` +
+  `go tool deadcode` (whole-program dead code) + `actionlint` + `yamllint` +
+  `shellcheck` (the last on this justfile's shebang recipes only).
+- `just format [args]` — `gofumpt -w`.
+- `just sast` — `govulncheck ./...` (security-scoped; keep it that way — dead
+  code and other quality checks belong in `just lint`, not here).
 
-When you add or change a tool invocation, edit the relevant `just` target so
-CI and pre-commit pick it up automatically.
+When you add or change a tool invocation, edit the relevant `just` target so CI
+and pre-commit pick it up automatically.
 
 ## Conventions & constraints
 
-- **Type checking is `basedpyright`** (the single type checker, in `just lint`
-  and as the neovim LSP — same `[tool.basedpyright]` config drives both, so
-  IDE and CI agree). Do not re-add `ty` or mypy; running two checkers means
-  maintaining two configs and being held to their union. `reportUnusedParameter`
-  stays on — mark intentionally-unused params with a `_` prefix (e.g. Typer's
-  `_version` callback param) rather than disabling the rule.
-- **`just sast` is security-scoped**, not a code-quality grab-bag. Keep it on
-  `--danger --secrets --sca`; do not add skylos `--all`/`--quality`, which emits
-  noisy repo-policy nags unrelated to the source.
-- **pre-commit delegates to `just` targets** (`.pre-commit-config.yaml`) so
-  command definitions stay in one place. The hook is installed automatically by
-  the dev shell's `shellHook` on `nix develop` entry (skipped under `CI`).
+- **Requires Go 1.26.**
+- **`just sast` is security-scoped** (`govulncheck`). Quality checks (dead code,
+  style) live in `just lint`.
+- **pre-commit delegates to `just` targets** (`.pre-commit-config.yaml`); the
+  hook is installed by the dev shell's `shellHook` on `nix develop` entry
+  (skipped under `CI`).
 - **CI runs through the flake dev shell** (`.github/workflows/`): install Nix,
-  then `nix develop --command uv sync --locked` and `nix develop --command just
-  lint` / `just test`. Because the shell is the same pinned nixpkgs as local
-  dev, CI tooling versions match. Keep CI steps as thin wrappers over `just`.
-  The CLI-invoking workflows (`local`, `preview`, `teardown`) still run the
-  shipped artifact via `nix run .#default`; `preview`/`teardown` also use
-  `nix develop --command bws ...` for secret injection.
-- **CI forces plain (uncolored) output** via workflow-level `env: { FORCE_COLOR:
-  "", NO_COLOR: "1" }`. A pseudo-terminal otherwise makes rich/Typer
-  colorize, which mangles logs and breaks substring assertions on `--help`.
-  `FORCE_COLOR` must be **empty** — any non-empty value (even `"0"`) still forces
-  color, and `FORCE_COLOR` overrides `NO_COLOR`. Tests also strip ANSI
-  defensively, so they pass regardless of color.
-- Requires **Python >= 3.13**.
+  then `nix develop --command just lint` / `test` / `sast` / `build`. A separate
+  Go module/build cache (`actions/cache`) sits alongside the nix-store cache
+  because `GOMODCACHE`/`GOCACHE` live in `$HOME`. CLI-invoking workflows
+  (`local`, `preview`, `teardown`) run the shipped artifact via
+  `nix run .#default`; `preview`/`teardown` also use `nix develop --command bws …`
+  for secret injection. `nix.yml` builds the packaged artifact and asserts the
+  version is stamped.
+- **CI forces plain (uncolored) output** via `env: { FORCE_COLOR: "", NO_COLOR:
+  "1" }` — `FORCE_COLOR` must be **empty** (any non-empty value, even `"0"`,
+  forces color and overrides `NO_COLOR`).
 - **All repository update operations go through `just update`** — never bump
-  pinned versions by hand. Today it runs `ratchet upgrade` to refresh the
-  GitHub Actions SHAs to the latest available version (`upgrade`, not `update`:
-  `update` stays within the pinned major, so it can't move e.g. v9 -> v22),
-  then `nix flake update`; future update operations belong in this target too.
-- **GitHub Actions are pinned to full commit SHAs** (supply-chain hardening),
-  with a `# ratchet:owner/action@vX` marker that `ratchet` uses to update them.
-  Dependabot (`.github/dependabot.yml`) opens weekly PRs to bump them; `just
-  update` is the manual path. Keep workflows passing `skylos --danger`: declare
-  top-level `permissions: {}` with minimal per-job grants, set
-  `persist-credentials: false` on checkout, and `timeout-minutes` on jobs.
+  pins by hand. It runs `ratchet upgrade` (refresh Action SHAs across majors),
+  `go get -u ./…` + `go mod tidy`, then `nix flake update`. A go.sum change means
+  the flake's `vendorHash` must be recomputed (set `lib.fakeHash`, `nix build`,
+  copy the reported hash).
+- **GitHub Actions are pinned to full commit SHAs** with a `# ratchet:owner/action@vX`
+  marker. Dependabot (`.github/dependabot.yml`, `github-actions` + `gomod`) opens
+  weekly PRs; `just update` is the manual path. Declare top-level `permissions: {}`
+  with minimal per-job grants, `persist-credentials: false` on checkout, and
+  `timeout-minutes` on jobs.
 
 ## Versioning & releasing
 
-The version is **derived from git tags** by `hatch-vcs` — there is no static
-`version` in `pyproject.toml` (it is declared `dynamic`). Do **not** add a
-hardcoded version back; the tag is the single source of truth.
+The version is **derived purely from the flake source**, not git tags (a flake
+can't read tags). `flake.nix` computes `0.0.0.dev<lastModifiedDate>+g<shortRev>`
+and stamps it into the binary via `-ldflags -X …/internal/version.Version`.
+`just build` mirrors this from `git` for local builds. Do **not** add a static
+version; the rev is the identifier.
 
-- Cut a release by tagging a clean commit: `git tag v1.2.3 && git push --tags`.
-  A clean checkout at that tag builds as version `1.2.3`. Pushing a `v*` tag
-  also triggers `.github/workflows/release.yml`, which creates a GitHub Release
-  with auto-generated notes (`gh release create --generate-notes`).
-- Between tags you get dev versions like `1.2.4.dev3+g<hash>`; a dirty working
-  tree adds a local suffix. This is expected.
-- Release tags must point at a commit reachable from `master` (i.e. a merged,
-  gated commit). Git/GitHub can't enforce this natively, so the release
-  workflow verifies it with `git merge-base --is-ancestor` and refuses to
-  release otherwise. Tag clean `master` commits only.
-- `dctl --version` reports the installed package version via
-  `importlib.metadata.version("dantofa-saas")` — keep that distribution name in
-  sync if the project is ever renamed.
-- CI checks out with `fetch-depth: 0` so tags/history are available to
-  hatch-vcs. `uv.lock` records the local package as dynamic, so `uv sync
-  --locked` does not break when the computed version changes.
+- Consumers track this flake by rev (a Nix input on `master`); `nix flake update`
+  locks the latest commit, and `dctl --version` names it. There is no
+  version-bearing tag scheme.
+- `nix.yml` asserts `dctl --version` matches `0.0.0.dev*+g*` (guards a broken
+  version injection).
 
 ## Repository configuration (as code)
 
-Branch protection and repo settings are codified, not clicked. Source of truth:
+Branch protection and repo settings are codified, not clicked:
 
-- `.github/repo-config/ruleset-master.json` — the `master` branch ruleset:
-  PR required (0 approvals — raise `required_approving_review_count` to 1 once a
-  second reviewer exists), conversation resolution, required `lint`/`test`
-  status checks (strict), linear history, squash-only merges, no force-push, no
-  deletion.
-- `.github/repo-config/repo-settings.json` — repo-level settings rulesets can't
-  model: squash-only merge button, auto-delete head branches, auto-merge, and
-  squash commit title/message = PR title/body.
+- `.github/repo-config/ruleset-master.json` — the `master` ruleset: PR required,
+  conversation resolution, required `lint`/`test` checks (strict), linear
+  history, squash-only merges, no force-push, no deletion.
+- `.github/repo-config/repo-settings.json` — squash-only merge, auto-delete head
+  branches, auto-merge, squash title/message = PR title/body.
 
-Apply **locally** with `just github repo` (idempotent; upserts the ruleset by
-name via `gh api`) whenever you change the JSON. It runs under your own `gh auth
-login`, which has admin on the `dantofa` org — so no PAT, no CI secret, and no
-workflow are needed. This is a manual step: there is no automatic drift
-correction, so re-run it after editing the config. Never click the settings in
-the UI, or the next apply reverts your change (the JSON wins).
-
-To change protection, edit the JSON and re-apply — never click it in the UI, or
-the next apply will revert your change (the JSON wins).
+Apply **locally** with `just github repo` (idempotent; upserts via `gh api`)
+after editing the JSON. Runs under your own `gh auth login` (admin on the
+`dantofa` org) — no PAT/CI secret. Manual, no drift correction: re-run after
+edits, and never click the settings in the UI (the JSON wins).
 
 ## Before you finish
 
 Run `just lint` and `just test` (or `pre-commit run --all-files`) and make sure
-they pass. If you touched dependencies, run `uv sync --locked` to confirm the
-lockfile is current — CI fails on a stale lockfile.
+they pass. If you changed Go deps, run `go mod tidy` and recompute the flake
+`vendorHash` — CI builds the package and will fail on a stale hash.

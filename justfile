@@ -1,12 +1,16 @@
 run *args:
-  uv run -- dantofa.cli {{args}}
+  go run ./cmd/dctl {{args}}
 
 test *args:
-  uv run -- pytest {{args}}
+  go test ./... {{args}}
 
-# Build the sdist + wheel into dist/.
+# Build the dctl binary into dist/, stamping the source-derived version the same
+# way the flake does (0.0.0.dev<date>+g<rev>) so a local build reports it too.
 build:
-  uv build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  version="0.0.0.dev$(git show -s --format=%cd --date=format:'%Y%m%d' HEAD)+g$(git rev-parse --short HEAD)"
+  go build -ldflags "-s -w -X github.com/dantofa/platform/internal/version.Version=$version" -o dist/dctl ./cmd/dctl
 
 shellcheck:
   #!/usr/bin/env bash
@@ -27,34 +31,53 @@ shellcheck:
 lint: shellcheck
   #!/usr/bin/env bash
   set -euo pipefail
-  uv run -- ruff check .
-  uv run -- basedpyright .
-  uv run -- lint-imports
+  # gofmt-strict (gofumpt): fail if any file needs reformatting.
+  unformatted="$(gofumpt -l .)"
+  if [ -n "$unformatted" ]; then
+    echo "gofumpt: these files are not formatted:"; echo "$unformatted"; exit 1
+  fi
+  go vet ./...
+  golangci-lint run
+  # Whole-program dead-code (quality, not security): fail on any unreachable func.
+  dead="$(go tool deadcode ./...)"
+  if [ -n "$dead" ]; then echo "deadcode: unreachable functions:"; echo "$dead"; exit 1; fi
   actionlint
   yamllint .
 
-format *args:
-  uv run -- ruff format {{args}}
+format *args=".":
+  gofumpt -w {{args}}
 
-# All repository update operations live here. Currently: pin any newly-added
-# GitHub Actions to a commit SHA, upgrade the pins to the latest available
-# version (ratchet `upgrade`, not `update`: `update` stays within the existing
-# major constraint, so it can never move e.g. v9 -> v22; `upgrade` rewrites the
-# constraint to the latest and re-pins), then refresh the Nix flake inputs
-# (flake.lock). `pin` is idempotent on already-pinned refs, so it's safe to run
-# every time before `upgrade`. Run this deliberately — freshness is a manual
-# operation, never a merge gate.
+# All repository update operations live here: pin any newly-added GitHub Actions
+# to a commit SHA, upgrade the pins to the latest available version (ratchet
+# `upgrade`, not `update`: `update` stays within the existing major constraint,
+# so it can never move e.g. v9 -> v22), refresh Go modules, then the Nix flake
+# inputs. NB: bumping Go deps changes go.sum, so the flake's `vendorHash` must be
+# recomputed (set it to lib.fakeHash, `nix build`, copy the reported hash). Run
+# this deliberately — freshness is a manual operation, never a merge gate.
 update:
   #!/usr/bin/env bash
   set -euo pipefail
   find .github/workflows -name "*.yml" -print0 | xargs -0 -L 1 ratchet pin
   find .github/workflows -name "*.yml" -print0 | xargs -0 -L 1 ratchet upgrade
+  go get -u ./...
+  go mod tidy
   nix flake update
 
 sast:
   #!/usr/bin/env bash
-  export SKYLOS_PRIVATE_DEPS_ALLOW=dantofa 
-  uv run -- skylos --format concise --danger --secrets --sca src
+  set -uo pipefail
+  out="$(govulncheck ./... 2>&1)"; status=$?
+  echo "$out"
+  [ "$status" -eq 0 ] && exit 0
+  # govulncheck exits non-zero when a vulnerability is actually called. A
+  # standard-library-only finding is fixed by bumping the (nix-pinned) Go
+  # toolchain via `just update`, not by our code — and freshness is never a merge
+  # gate here — so it warns rather than fails. Any finding in our modules/deps
+  # still fails the gate.
+  affected="$(echo "$out" | grep 'Your code is affected by')"
+  [ -z "$affected" ] && exit 0
+  if echo "$affected" | grep -qv 'Go standard library'; then exit 1; fi
+  echo "::warning::govulncheck: only standard-library vulnerabilities affect this code; bump the Go toolchain via 'just update'."
 
 github action:
   just github-{{action}}

@@ -1,15 +1,17 @@
 ---
-name: preview
+name: spaces
 on:
   pull_request:
 permissions: {}
 env:
   FORCE_COLOR: ""
-  CLUSTER_NAME: saas-preview-${{ github.event.pull_request.number }}
+  # Globally-unique, DNS-safe bucket name scoped to this run (Spaces bucket names
+  # are global per region), so no pre-run cleanup is needed.
+  BUCKET: dctl-ci-${{ github.event.pull_request.number }}-${{ github.run_id }}
 jobs:
-  preview:
+  spaces:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     environment: preview
     permissions:
       contents: read
@@ -32,32 +34,34 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      - name: Destroy preview cluster
+      # bws injects only the DigitalOcean token (DIGITALOCEAN_ACCESS_TOKEN) from
+      # the shared secrets project — no standing Spaces keys. dctl mints an
+      # ephemeral Spaces key from the token, runs the S3 op against real
+      # DigitalOcean Spaces, and revokes the key afterwards (even on error).
+      - name: Create bucket
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
           nix develop --command
           bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
-          nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
+          nix run .#default -- digitalocean space create "$BUCKET"
 
-      - name: Create preview cluster
+      - name: Verify bucket is listed
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
           nix develop --command
           bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
-          nix run .#default -- digitalocean cluster create --name "$CLUSTER_NAME" --wait
+          nix run .#default -- digitalocean space list | grep -qF "$BUCKET"
 
-      # TODO: payload testing goes here, between create and teardown:
-      #   - wait for the cluster to reach "running" and fetch its kubeconfig
-      #   - deploy the payload
-      #   - run the cluster tests against it
-
-      - name: Destroy preview cluster
-        if: success()
+      # Best-effort teardown: the bucket is empty and uniquely named, so a delete
+      # failure means create never happened (the job is already failing) — don't
+      # let cleanup mask the real error.
+      - name: Delete bucket
+        if: always()
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
           nix develop --command
           bws run --project-id 8adeb984-2d51-4701-bd80-b3a3018260ea --
-          nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
+          nix run .#default -- digitalocean space delete "$BUCKET" || true

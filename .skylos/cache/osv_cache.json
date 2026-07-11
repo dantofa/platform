@@ -1,0 +1,10 @@
+{
+  "PyPI:typer:0.16.0": [],
+  "PyPI:httpx:0.27": [],
+  "PyPI:boto3:1.35": [],
+  "PyPI:botocore:1.35": [],
+  "PyPI:kubernetes-asyncio:31.1.1": [],
+  "PyPI:pydo:0.37.0": [],
+  "PyPI:azure-core:1.41.0": [],
+  "_ts": 1783626903.2536647
+}
