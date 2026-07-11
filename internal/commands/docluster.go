@@ -1,12 +1,16 @@
 package commands
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	doclient "github.com/dantofa/platform/internal/clients/digitalocean"
+	"github.com/dantofa/platform/internal/clients/flux"
+	"github.com/dantofa/platform/internal/clients/kube"
 	docore "github.com/dantofa/platform/internal/core/digitalocean"
 	"github.com/dantofa/platform/internal/render"
 )
@@ -27,6 +31,7 @@ func newClusterCmd() *cobra.Command {
 		newClusterUpdateCmd(&token),
 		newClusterConnectCmd(&token),
 		newClusterDeleteCmd(&token),
+		newClusterBootstrapCmd(&token),
 	)
 	return cluster
 }
@@ -197,4 +202,109 @@ func newClusterDeleteCmd(token *string) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// writeTempKubeconfig writes kubeconfig bytes to a private temp file for tools
+// (the flux CLI) that need a path, returning the path and a cleanup func.
+func writeTempKubeconfig(data []byte) (string, func(), error) {
+	f, err := os.CreateTemp("", "dctl-kubeconfig-*.yaml")
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", nil, err
+	}
+	_ = f.Close()
+	return f.Name(), func() { _ = os.Remove(f.Name()) }, nil
+}
+
+func newClusterBootstrapCmd(token *string) *cobra.Command {
+	var (
+		bucket, region, fluxVersion              string
+		sourceURL, sourceBranch, sourcePath, src string
+		namespace, secretName, configMapName     string
+	)
+	cmd := &cobra.Command{
+		Use:   "bootstrap <cluster>",
+		Short: "Bootstrap a cluster for GitOps backups.",
+		Long: "Link a versioned Spaces backup bucket + scoped credential into the " +
+			"cluster, install Flux, and point it at the platform source. The DO " +
+			"token stays with you and never enters the cluster; only the " +
+			"bucket-scoped key is stored there. Idempotent.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cluster := args[0]
+			ctx := cmd.Context()
+			if bucket == "" {
+				bucket = cluster + "-backup"
+			}
+
+			// Fetch the cluster's kubeconfig via the DO token (to a temp file the
+			// flux CLI can consume).
+			cc, err := doclient.NewClusterClient(*token)
+			if err != nil {
+				render.Error(err)
+				return errHandled
+			}
+			kubeconfig, err := docore.GetKubeconfig(ctx, cc, cluster)
+			if err != nil {
+				render.Error(err)
+				return errHandled
+			}
+			kubePath, cleanup, err := writeTempKubeconfig([]byte(kubeconfig))
+			if err != nil {
+				render.Error(err)
+				return errHandled
+			}
+			defer cleanup()
+			kc, err := kube.NewFromPath(kubePath)
+			if err != nil {
+				render.Error(err)
+				return errHandled
+			}
+
+			// 1. Link the backup bucket + credential into the cluster.
+			if err := withSpaces(cmd, region, *token, func(ctx context.Context, sc *doclient.SpacesClient) error {
+				store := doclient.NewCredentialStore(kc, namespace, secretName, configMapName)
+				_, err := docore.LinkAndStore(ctx, sc, store, bucket)
+				return err
+			}); err != nil {
+				return err // withSpaces already rendered
+			}
+
+			// 2. Install Flux and register the platform source + kustomization.
+			fx := flux.New(kubePath)
+			for _, step := range []func() error{
+				func() error { return fx.Install(ctx, fluxVersion) },
+				func() error { return fx.CreateGitSource(ctx, src, sourceURL, sourceBranch) },
+				func() error { return fx.CreateKustomization(ctx, src, src, sourcePath) },
+			} {
+				if err := step(); err != nil {
+					render.Error(err)
+					return errHandled
+				}
+			}
+
+			return render.JSON(map[string]string{
+				"cluster":     cluster,
+				"bucket":      bucket,
+				"flux_source": src,
+				"flux_path":   sourcePath,
+			})
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&bucket, "bucket", "", "Backup bucket name (default <cluster>-backup).")
+	f.StringVar(&region, "region", "", "Spaces region (defaults to $DIGITALOCEAN_SPACES_REGION / nyc3).")
+	f.StringVar(&fluxVersion, "flux-version", "", "Flux version to install (default: the bundled flux CLI's version).")
+	f.StringVar(&sourceURL, "source-url", "https://github.com/dantofa/platform", "Git URL of the GitOps source.")
+	f.StringVar(&sourceBranch, "source-branch", "master", "Branch of the GitOps source.")
+	f.StringVar(&sourcePath, "source-path", "./flux", "Path within the source that Flux reconciles.")
+	f.StringVar(&src, "source-name", "platform", "Name of the Flux source and kustomization.")
+	f.StringVar(&namespace, "namespace", "flux-system", "Namespace for the credential Secret and coordinates ConfigMap.")
+	f.StringVar(&secretName, "secret-name", "", "Credential Secret name (default "+doclient.DefaultSecretName+").")
+	f.StringVar(&configMapName, "configmap-name", "", "Coordinates ConfigMap name (default "+doclient.DefaultConfigMapName+").")
+	return cmd
 }

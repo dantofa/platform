@@ -1,0 +1,68 @@
+// Package flux is an adapter over the flux CLI (bundled in the package closure)
+// for installing Flux into a cluster and registering GitOps sources. It shells
+// out with an explicit --kubeconfig, so it targets a specific cluster.
+package flux
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os/exec"
+	"strings"
+)
+
+// fluxNamespace is where Flux installs its controllers and where sources /
+// kustomizations are created.
+const fluxNamespace = "flux-system"
+
+// Client runs the flux CLI against a specific cluster's kubeconfig.
+type Client struct {
+	kubeconfig string
+}
+
+// New builds a flux client bound to a kubeconfig path.
+func New(kubeconfigPath string) *Client { return &Client{kubeconfig: kubeconfigPath} }
+
+func (c *Client) run(ctx context.Context, args ...string) error {
+	full := append([]string{"--kubeconfig", c.kubeconfig}, args...)
+	cmd := exec.CommandContext(ctx, "flux", full...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return errors.New("`flux` is not installed or not on PATH")
+		}
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("`flux %s` failed: %s", strings.Join(args, " "), detail)
+	}
+	return nil
+}
+
+// Install installs the Flux controllers. An empty version uses the flux CLI's
+// own version; otherwise the given version's components are installed.
+func (c *Client) Install(ctx context.Context, version string) error {
+	args := []string{"install"}
+	if version != "" {
+		args = append(args, "--version", version)
+	}
+	return c.run(ctx, args...)
+}
+
+// CreateGitSource registers (create-or-update) a GitRepository source.
+func (c *Client) CreateGitSource(ctx context.Context, name, url, branch string) error {
+	return c.run(ctx, "create", "source", "git", name,
+		"--url", url, "--branch", branch, "--interval", "1m",
+		"--namespace", fluxNamespace)
+}
+
+// CreateKustomization registers (create-or-update) a Kustomization reconciling
+// the given path from the named GitRepository source.
+func (c *Client) CreateKustomization(ctx context.Context, name, source, path string) error {
+	return c.run(ctx, "create", "kustomization", name,
+		"--source", "GitRepository/"+source, "--path", path,
+		"--prune=true", "--interval", "10m", "--namespace", fluxNamespace)
+}
