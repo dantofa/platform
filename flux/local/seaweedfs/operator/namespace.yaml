@@ -1,0 +1,7 @@
+---
+# The SeaweedFS operator's namespace. The operator itself is cluster-scoped and
+# manages the Seaweed cluster in the velero namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: seaweedfs

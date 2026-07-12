@@ -9,21 +9,21 @@ env:
 jobs:
   preview:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     environment: preview
     permissions:
       contents: read
     steps:
       - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # ratchet:DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
       - name: Cache Nix store
-        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # ratchet:nix-community/cache-nix-action@v7
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'go.sum', '**/*.nix') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
@@ -60,12 +60,34 @@ jobs:
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: |
-          nix develop --command bws run --project-id ${{ vars.BWS_PROJECT_ID }} -- nix run .#default -- digitalocean cluster connect "$CLUSTER_NAME" --output preview.kubeconfig
-          test -s preview.kubeconfig
+          nix develop --command bws run --project-id ${{ vars.BWS_PROJECT_ID }} -- nix run .#default -- digitalocean cluster connect "$CLUSTER_NAME" --output .kubeconfig
+          test -s .kubeconfig
 
-      # TODO: payload testing goes here, between create and teardown:
-      #   - deploy the payload
-      #   - run the cluster tests against it
+      # Link a Spaces backup bucket + install Flux, pointed at this PR's branch so
+      # the manifests under test are the ones being reviewed (not master's).
+      - name: Bootstrap the backup stack
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME"
+          --source-branch "$HEAD_REF"
+
+      - name: Verify Velero backup
+        run: nix develop --command just verify-backup
+
+      # Teardown of the bucket + scoped key the bootstrap created (a completed
+      # backup leaves objects, so a plain `space delete` would not suffice).
+      - name: Tear down backup bucket
+        if: always()
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean space unlink "$CLUSTER_NAME-backup" || true
 
       - name: Destroy preview cluster
         if: success()

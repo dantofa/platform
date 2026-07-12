@@ -1,0 +1,10 @@
+---
+# Reconciled by the `velero` Kustomization (../velero.yaml) with
+# postBuild.substituteFrom, so the ${bucket}/${region}/${endpoint} placeholders
+# in release.yml are filled from the coordinates ConfigMap.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - repository.yaml
+  - release.yaml

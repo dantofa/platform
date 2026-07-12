@@ -1,0 +1,10 @@
+---
+# The remote/DOKS reconcile root, reconciled by the `platform` Flux
+# Kustomization that `dctl do cluster bootstrap` registers (sourceRef: this repo,
+# path: ./flux/cluster). No variable substitution happens here; the
+# cluster-specific values are substituted into ./flux/cluster/velero by the
+# nested `velero` Kustomization below.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - velero.yaml

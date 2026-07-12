@@ -15,13 +15,17 @@ type fakeLocalAPI struct {
 }
 
 func (f *fakeLocalAPI) List(context.Context) ([]string, error) { return f.clusters, nil }
-func (f *fakeLocalAPI) Create(_ context.Context, name, _ string, _ int) error {
+func (f *fakeLocalAPI) Create(_ context.Context, name, _ string, _, _ int) error {
 	f.created = name
 	return nil
 }
 func (f *fakeLocalAPI) Delete(_ context.Context, name string) error { f.deleted = name; return nil }
 func (f *fakeLocalAPI) GetKubeconfig(context.Context, string) (string, error) {
 	return "kubeconfig", nil
+}
+
+func (f *fakeLocalAPI) RegistryIP(context.Context, string) (string, error) {
+	return "172.18.0.6", nil
 }
 
 func (f *fakeLocalAPI) GitProvenance(context.Context) (string, string, error) {
@@ -38,9 +42,23 @@ func (f *fakeLocalAPI) ReconcileSource(_ context.Context, name string) error {
 	return nil
 }
 
+func TestListClustersEmptyIsNonNil(t *testing.T) {
+	got, err := ListClusters(context.Background(), &fakeLocalAPI{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A nil slice marshals to JSON `null`; a list command must render `[]`.
+	if got == nil {
+		t.Fatal("expected a non-nil empty slice, got nil")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty, got %v", got)
+	}
+}
+
 func TestCreateClusterExists(t *testing.T) {
 	f := &fakeLocalAPI{clusters: []string{"local"}}
-	_, err := CreateCluster(context.Background(), f, "local", "reg", 5001)
+	_, err := CreateCluster(context.Background(), f, "local", "reg", 5001, 3)
 	var ex *LocalClusterExistsError
 	if !errors.As(err, &ex) {
 		t.Fatalf("expected LocalClusterExistsError, got %v", err)
@@ -49,7 +67,7 @@ func TestCreateClusterExists(t *testing.T) {
 
 func TestCreateClusterEndpoints(t *testing.T) {
 	f := &fakeLocalAPI{}
-	res, err := CreateCluster(context.Background(), f, "local", "kind-registry", 5001)
+	res, err := CreateCluster(context.Background(), f, "local", "kind-registry", 5001, 3)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,11 @@
+---
+# Pre-create the backup bucket so Velero's first backup does not race bucket
+# auto-creation.
+apiVersion: seaweed.seaweedfs.com/v1
+kind: Bucket
+metadata:
+  name: local-backup
+  namespace: velero
+spec:
+  clusterRef:
+    name: backup

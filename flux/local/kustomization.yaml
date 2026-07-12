@@ -1,0 +1,15 @@
+---
+# The local/kind reconcile root, reconciled by the `platform` Kustomization that
+# `dctl local cluster bootstrap` registers (OCIRepository, path ./flux/local).
+# Brings up an in-cluster SeaweedFS S3 backend (the local stand-in for a cloud
+# bucket) and reuses the shared Velero stack under ./flux/cluster/velero. The
+# velero namespace is created imperatively by `dctl local cluster bootstrap`.
+# Nested Flux Kustomizations, ordered via dependsOn: seaweedfs-operator ->
+# seaweedfs-cluster (backend) and backup -> velero (backup contract before Velero
+# installs).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - seaweedfs
+  - backup.yaml
+  - velero.yaml

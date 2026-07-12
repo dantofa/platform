@@ -62,7 +62,7 @@
           src = ./.;
           # Recompute with `just update` / after changing go.sum. Set to
           # lib.fakeHash and rebuild to learn the new value.
-          vendorHash = "sha256-pYBRBIpezabyvQlJJYU4bT1W4w+7YbRqUYlj1Q9HZrU=";
+          vendorHash = "sha256-VNmPNhs1qvBvyULehp4gwAdjqytzFcKdw504YkfFtv8=";
 
           subPackages = [ "cmd/dctl" ];
           env.CGO_ENABLED = "0";
@@ -126,15 +126,22 @@
               pkgs.actionlint
               pkgs.yamllint
               pkgs.gh
-              pkgs.ratchet
               pkgs.shellcheck
               pkgs.pre-commit
               pkgs.bws
               pkgs.kubectl
+              # velero CLI for the backup-verification integration checks (CI
+              # only; dctl never shells out to it, so it is not a runtimeTool).
+              pkgs.velero
             ];
             # Local kubeconfig target.
             KUBECONFIG = ".kubeconfig";
             shellHook = ''
+              # Put `just build` output on PATH so the fast, cache-backed local
+              # build is callable as `dctl` (the intended entrypoint) without a
+              # from-scratch `nix run .#default`. The runtime CLIs the package
+              # wraps in are already on PATH here, so dist/dctl behaves the same.
+              export PATH="$PWD/dist:$PATH"
               # Load local, gitignored config/secrets (e.g. BWS_ACCESS_TOKEN,
               # BWS_PROJECT_ID) — see .env.example.
               if [ -f .env ]; then

@@ -10,3 +10,4 @@ result-*
 
 # local, per-developer env loaded by the dev shell (secrets/config)
 .env
+.coverage

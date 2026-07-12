@@ -10,7 +10,10 @@ build:
   #!/usr/bin/env bash
   set -euo pipefail
   version="0.0.0.dev$(git show -s --format=%cd --date=format:'%Y%m%d' HEAD)+g$(git rev-parse --short HEAD)"
-  go build -ldflags "-s -w -X github.com/dantofa/platform/internal/version.Version=$version" -o dist/dctl ./cmd/dctl
+  # CGO_ENABLED=0 matches the flake package: a static binary with no libc link,
+  # so dist/dctl behaves identically to the shipped artifact. Go's build cache
+  # makes this incremental (unlike the hermetic `nix build`).
+  CGO_ENABLED=0 go build -ldflags "-s -w -X github.com/dantofa/platform/internal/version.Version=$version" -o dist/dctl ./cmd/dctl
 
 shellcheck:
   #!/usr/bin/env bash
@@ -47,18 +50,46 @@ lint: shellcheck
 format *args=".":
   gofumpt -w {{args}}
 
-# All repository update operations live here: pin any newly-added GitHub Actions
-# to a commit SHA, upgrade the pins to the latest available version (ratchet
-# `upgrade`, not `update`: `update` stays within the existing major constraint,
-# so it can never move e.g. v9 -> v22), refresh Go modules, then the Nix flake
-# inputs. NB: bumping Go deps changes go.sum, so the flake's `vendorHash` must be
-# recomputed (set it to lib.fakeHash, `nix build`, copy the reported hash). Run
-# this deliberately — freshness is a manual operation, never a merge gate.
+# Integration check (CI): assert Flux installed Velero and a backup completes.
+# Targets the cluster in $KUBECONFIG; run after bootstrapping the backup stack
+# (local: `local cluster bootstrap` + `push`; preview: `do cluster bootstrap`).
+verify-backup:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  ns=velero
+  echo "Waiting for Flux to install the Velero HelmRelease..."
+  for _ in $(seq 1 90); do
+    if kubectl -n "$ns" get helmrelease velero >/dev/null 2>&1; then break; fi
+    sleep 10
+  done
+  kubectl -n "$ns" wait --for=condition=Ready --timeout=600s helmrelease/velero
+  echo "Waiting for the BackupStorageLocation to become Available..."
+  kubectl -n "$ns" wait --for=jsonpath='{.status.phase}'=Available \
+    backupstoragelocation/default --timeout=300s
+  echo "Issuing a test backup..."
+  kubectl -n default create configmap velero-ci-probe \
+    --from-literal=ok=1 --dry-run=client -o yaml | kubectl apply -f -
+  backup="ci-verify-$(date +%s)"
+  velero backup create "$backup" --namespace "$ns" --include-namespaces default --wait || true
+  phase="$(kubectl -n "$ns" get backup "$backup" -o jsonpath='{.status.phase}')"
+  echo "Backup $backup phase: $phase"
+  if [ "$phase" != "Completed" ]; then
+    velero backup describe "$backup" --namespace "$ns" --details || true
+    velero backup logs "$backup" --namespace "$ns" || true
+    exit 1
+  fi
+
+# Manual refresh of the pins Renovate does not own: Go modules and the Nix flake
+# inputs (the flake tracks nixos-unstable, a rolling branch with no versions to
+# PR, so it stays manual). GitHub Actions, Go modules, and the Flux manifest
+# chart/image versions also get automated PRs from Renovate (the hosted Mend
+# app; see .github/renovate.json5). NB: bumping Go deps changes go.sum, so the
+# flake's `vendorHash` must be recomputed (set it to lib.fakeHash, `nix build`,
+# copy the reported hash) — that applies to Renovate's gomod PRs too. Run this
+# deliberately — freshness is a manual operation, never a merge gate.
 update:
   #!/usr/bin/env bash
   set -euo pipefail
-  find .github/workflows -name "*.yml" -print0 | xargs -0 -L 1 ratchet pin
-  find .github/workflows -name "*.yml" -print0 | xargs -0 -L 1 ratchet upgrade
   go get -u ./...
   go mod tidy
   nix flake update
