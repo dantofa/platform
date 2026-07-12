@@ -126,7 +126,6 @@
               pkgs.actionlint
               pkgs.yamllint
               pkgs.gh
-              pkgs.ratchet
               pkgs.shellcheck
               pkgs.pre-commit
               pkgs.bws
@@ -138,6 +137,11 @@
             # Local kubeconfig target.
             KUBECONFIG = ".kubeconfig";
             shellHook = ''
+              # Put `just build` output on PATH so the fast, cache-backed local
+              # build is callable as `dctl` (the intended entrypoint) without a
+              # from-scratch `nix run .#default`. The runtime CLIs the package
+              # wraps in are already on PATH here, so dist/dctl behaves the same.
+              export PATH="$PWD/dist:$PATH"
               # Load local, gitignored config/secrets (e.g. BWS_ACCESS_TOKEN,
               # BWS_PROJECT_ID) — see .env.example.
               if [ -f .env ]; then

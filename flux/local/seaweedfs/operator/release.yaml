@@ -9,8 +9,8 @@ spec:
   chart:
     spec:
       chart: seaweedfs-operator
-      # Local test store; pin deliberately via `just update`.
-      version: "*"
+      # Exact pin; bumped by Renovate (flux manager).
+      version: "0.1.35"
       sourceRef:
         kind: HelmRepository
         name: seaweedfs-operator

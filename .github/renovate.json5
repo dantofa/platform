@@ -1,0 +1,35 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  // Single dependency-update mechanism for the repo (replaces Dependabot and the
+  // ratchet-based Action pinning). Runs as the hosted Mend Renovate app; its PRs
+  // are gated by the same required checks as any other PR.
+  extends: [
+    "config:recommended",
+    // Keep GitHub Actions pinned to full commit SHAs (repo policy) with a
+    // maintained version comment — Renovate now owns this, not ratchet.
+    "helpers:pinGitHubActionDigests",
+    ":dependencyDashboard",
+  ],
+  labels: ["dependencies"],
+  schedule: ["before 6am on monday"],
+  // Exactly what Renovate manages. The nix flake input is a rolling branch
+  // (nixos-unstable), which has no versions to bump, so it stays on the manual
+  // `just update` path and the nix manager is intentionally left out.
+  enabledManagers: ["github-actions", "gomod", "flux", "custom.regex"],
+  // Flux GitOps manifests: HelmRelease chart versions (resolved via the linked
+  // HelmRepository) and container images inside HelmRelease values (the Velero
+  // AWS plugin).
+  flux: {
+    managerFilePatterns: ["/flux/.+\\.ya?ml$/"],
+  },
+  // The SeaweedFS cluster image lives in a custom `Seaweed` CRD field, not a
+  // HelmRelease, so the flux manager does not see it — match it explicitly.
+  customManagers: [
+    {
+      customType: "regex",
+      managerFilePatterns: ["/flux/local/seaweedfs/cluster/seaweed\\.yaml$/"],
+      matchStrings: ["image:\\s*(?<depName>[^:\\s]+):(?<currentValue>\\S+)"],
+      datasourceTemplate: "docker",
+    },
+  ],
+}

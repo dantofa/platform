@@ -10,7 +10,10 @@ build:
   #!/usr/bin/env bash
   set -euo pipefail
   version="0.0.0.dev$(git show -s --format=%cd --date=format:'%Y%m%d' HEAD)+g$(git rev-parse --short HEAD)"
-  go build -ldflags "-s -w -X github.com/dantofa/platform/internal/version.Version=$version" -o dist/dctl ./cmd/dctl
+  # CGO_ENABLED=0 matches the flake package: a static binary with no libc link,
+  # so dist/dctl behaves identically to the shipped artifact. Go's build cache
+  # makes this incremental (unlike the hermetic `nix build`).
+  CGO_ENABLED=0 go build -ldflags "-s -w -X github.com/dantofa/platform/internal/version.Version=$version" -o dist/dctl ./cmd/dctl
 
 shellcheck:
   #!/usr/bin/env bash
@@ -76,18 +79,17 @@ verify-backup:
     exit 1
   fi
 
-# All repository update operations live here: pin any newly-added GitHub Actions
-# to a commit SHA, upgrade the pins to the latest available version (ratchet
-# `upgrade`, not `update`: `update` stays within the existing major constraint,
-# so it can never move e.g. v9 -> v22), refresh Go modules, then the Nix flake
-# inputs. NB: bumping Go deps changes go.sum, so the flake's `vendorHash` must be
-# recomputed (set it to lib.fakeHash, `nix build`, copy the reported hash). Run
-# this deliberately — freshness is a manual operation, never a merge gate.
+# Manual refresh of the pins Renovate does not own: Go modules and the Nix flake
+# inputs (the flake tracks nixos-unstable, a rolling branch with no versions to
+# PR, so it stays manual). GitHub Actions, Go modules, and the Flux manifest
+# chart/image versions also get automated PRs from Renovate (the hosted Mend
+# app; see .github/renovate.json5). NB: bumping Go deps changes go.sum, so the
+# flake's `vendorHash` must be recomputed (set it to lib.fakeHash, `nix build`,
+# copy the reported hash) — that applies to Renovate's gomod PRs too. Run this
+# deliberately — freshness is a manual operation, never a merge gate.
 update:
   #!/usr/bin/env bash
   set -euo pipefail
-  find .github/workflows -name "*.yml" -print0 | xargs -0 -L 1 ratchet pin
-  find .github/workflows -name "*.yml" -print0 | xargs -0 -L 1 ratchet upgrade
   go get -u ./...
   go mod tidy
   nix flake update

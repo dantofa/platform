@@ -7,7 +7,7 @@ ignore: |
 
 rules:
   # Allow longer lines; CI/config YAML often has long action refs and URLs.
-  # SHA-pinned action refs + ratchet markers blow past any sane width, so
+  # SHA-pinned action refs + version-comment markers blow past any sane width, so
   # line-length is not enforced inside the workflows directory.
   line-length:
     max: 120
@@ -17,6 +17,7 @@ rules:
   # flagged because YAML 1.1 treats `on` as a boolean.
   truthy:
     check-keys: false
-  # ratchet writes its pin markers with a single space before `#`.
+  # Renovate writes its action pin markers (`@<sha> # vX.Y.Z`) with a single
+  # space before `#`.
   comments:
     min-spaces-from-content: 1

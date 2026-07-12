@@ -61,7 +61,7 @@ Dependencies are split by purpose:
 - **Generic, language-agnostic dev tools live in the flake dev shell**
   (`devShells.default` in `flake.nix`) — the Go toolchain (`go`, `gopls`,
   `golangci-lint`, `gofumpt`, `govulncheck`) plus `just`, `actionlint`,
-  `yamllint`, `shellcheck`, `gh`, `ratchet`, `pre-commit`, `kubectl`, `bws`, and
+  `yamllint`, `shellcheck`, `gh`, `pre-commit`, `kubectl`, `bws`, `velero`, and
   the runtime CLIs (`kind`, `flux`, `docker`, `git`). All from the **same pinned
   nixpkgs as the package** (one resolver, one lockfile), and what CI uses too via
   `nix develop --command`. Enter with `nix develop` (or `direnv`). The runtime
@@ -111,15 +111,22 @@ and pre-commit pick it up automatically.
 - **CI forces plain (uncolored) output** via `env: { FORCE_COLOR: "", NO_COLOR:
   "1" }` — `FORCE_COLOR` must be **empty** (any non-empty value, even `"0"`,
   forces color and overrides `NO_COLOR`).
-- **All repository update operations go through `just update`** — never bump
-  pins by hand. It runs `ratchet upgrade` (refresh Action SHAs across majors),
-  `go get -u ./…` + `go mod tidy`, then `nix flake update`. A go.sum change means
-  the flake's `vendorHash` must be recomputed (set `lib.fakeHash`, `nix build`,
-  copy the reported hash).
-- **GitHub Actions are pinned to full commit SHAs** with a `# ratchet:owner/action@vX`
-  marker. Dependabot (`.github/dependabot.yml`, `github-actions` + `gomod`) opens
-  weekly PRs; `just update` is the manual path. Declare top-level `permissions: {}`
-  with minimal per-job grants, `persist-credentials: false` on checkout, and
+- **Dependency updates come from Renovate** (the hosted Mend app, config in
+  `.github/renovate.json5`) — the single automated path, replacing Dependabot and
+  the ratchet-based Action pinning. It opens PRs for GitHub Actions (kept
+  SHA-pinned via `helpers:pinGitHubActionDigests`), Go modules, and the Flux
+  manifests (`HelmRelease` chart versions + the Velero plugin image via the `flux`
+  manager, and the SeaweedFS `Seaweed` CRD image via a `customManagers` regex).
+  A Renovate gomod PR changes `go.sum`, so the flake's `vendorHash` must be
+  recomputed on it (set `lib.fakeHash`, `nix build`, copy the reported hash) —
+  Renovate cannot do that itself.
+- **`just update` is the manual path for what Renovate does not own**: `go get -u
+  ./…` + `go mod tidy`, then `nix flake update` (the flake tracks `nixos-unstable`,
+  a rolling branch with no versions to PR, so it stays manual). Same `vendorHash`
+  caveat applies.
+- **GitHub Actions are pinned to full commit SHAs** with a `# vX.Y.Z` version
+  comment (maintained by Renovate). Declare top-level `permissions: {}` with
+  minimal per-job grants, `persist-credentials: false` on checkout, and
   `timeout-minutes` on jobs.
 
 ## Versioning & releasing

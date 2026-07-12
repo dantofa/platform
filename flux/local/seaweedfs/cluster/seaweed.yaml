@@ -9,7 +9,7 @@ metadata:
   name: backup
   namespace: velero
 spec:
-  # Local test store; pin deliberately via `just update`.
+  # Local test store; bumped by Renovate (custom manager).
   image: chrislusf/seaweedfs:4.39
   master:
     replicas: 1
