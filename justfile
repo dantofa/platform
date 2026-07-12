@@ -47,6 +47,35 @@ lint: shellcheck
 format *args=".":
   gofumpt -w {{args}}
 
+# Integration check (CI): assert Flux installed Velero and a backup completes.
+# Targets the cluster in $KUBECONFIG; run after bootstrapping the backup stack
+# (local: `local cluster bootstrap` + `push`; preview: `do cluster bootstrap`).
+verify-backup:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  ns=velero
+  echo "Waiting for Flux to install the Velero HelmRelease..."
+  for _ in $(seq 1 90); do
+    if kubectl -n "$ns" get helmrelease velero >/dev/null 2>&1; then break; fi
+    sleep 10
+  done
+  kubectl -n "$ns" wait --for=condition=Ready --timeout=600s helmrelease/velero
+  echo "Waiting for the BackupStorageLocation to become Available..."
+  kubectl -n "$ns" wait --for=jsonpath='{.status.phase}'=Available \
+    backupstoragelocation/default --timeout=300s
+  echo "Issuing a test backup..."
+  kubectl -n default create configmap velero-ci-probe \
+    --from-literal=ok=1 --dry-run=client -o yaml | kubectl apply -f -
+  backup="ci-verify-$(date +%s)"
+  velero backup create "$backup" --namespace "$ns" --include-namespaces default --wait || true
+  phase="$(kubectl -n "$ns" get backup "$backup" -o jsonpath='{.status.phase}')"
+  echo "Backup $backup phase: $phase"
+  if [ "$phase" != "Completed" ]; then
+    velero backup describe "$backup" --namespace "$ns" --details || true
+    velero backup logs "$backup" --namespace "$ns" || true
+    exit 1
+  fi
+
 # All repository update operations live here: pin any newly-added GitHub Actions
 # to a commit SHA, upgrade the pins to the latest available version (ratchet
 # `upgrade`, not `update`: `update` stays within the existing major constraint,

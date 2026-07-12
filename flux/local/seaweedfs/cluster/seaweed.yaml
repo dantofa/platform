@@ -1,0 +1,30 @@
+---
+# A minimal single-replica SeaweedFS cluster with the standalone S3 gateway
+# enabled, running in the velero namespace. The gateway serves S3 on port 8333 at
+# the ClusterIP service `backup-s3.velero.svc.cluster.local` (referenced by
+# ../../backup/target.yaml).
+apiVersion: seaweed.seaweedfs.com/v1
+kind: Seaweed
+metadata:
+  name: backup
+  namespace: velero
+spec:
+  # Local test store; pin deliberately via `just update`.
+  image: chrislusf/seaweedfs:4.39
+  master:
+    replicas: 1
+  volume:
+    replicas: 1
+    requests:
+      storage: 2Gi
+  filer:
+    replicas: 1
+    config: |
+      [leveldb2]
+      enabled = true
+      dir = "/data/filerldb2"
+  s3:
+    replicas: 1
+    configSecret:
+      name: seaweedfs-s3-config
+      key: seaweedfs_s3_config.json

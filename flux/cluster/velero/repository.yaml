@@ -1,9 +1,8 @@
 ---
-# The upstream Velero Helm chart repository.
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
 metadata:
-  name: vmware-tanzu
+  name: velero
   namespace: velero
 spec:
   interval: 1h

@@ -1,9 +1,9 @@
 ---
-# Velero, backing the whole cluster up to the linked DigitalOcean Spaces bucket.
+# Velero, backing the whole cluster up to the linked object-storage bucket.
 # The ${bucket}/${region}/${endpoint} placeholders are substituted by the parent
-# `velero` Kustomization from the spaces-backup-target ConfigMap. Credentials
-# come from the spaces-backup-credentials Secret (key `cloud`) that dctl writes
-# into this namespace; the DO API token never enters the cluster.
+# `velero` Kustomization from the backup-target ConfigMap. Credentials come from
+# the backup-credential Secret (key `cloud`) that dctl writes into this
+# namespace; the provider API token never enters the cluster.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -14,11 +14,10 @@ spec:
   chart:
     spec:
       chart: velero
-      # Pinned to the current major; bump deliberately via `just update`.
-      version: ">=8.0.0 <9.0.0"
+      version: "12.x"
       sourceRef:
         kind: HelmRepository
-        name: vmware-tanzu
+        name: velero
         namespace: velero
       interval: 1h
   install:
@@ -29,13 +28,13 @@ spec:
     # The AWS provider plugin speaks the S3 API that Spaces implements.
     initContainers:
       - name: velero-plugin-for-aws
-        image: velero/velero-plugin-for-aws:v1.11.1
+        image: velero/velero-plugin-for-aws:v1.13.2
         imagePullPolicy: IfNotPresent
         volumeMounts:
           - mountPath: /target
             name: plugins
     credentials:
-      existingSecret: spaces-backup-credentials
+      existingSecret: backup-credential
     # Spaces is object storage only: no volume snapshots, no node agent.
     snapshotsEnabled: false
     deployNodeAgent: false

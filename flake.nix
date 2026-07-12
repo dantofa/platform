@@ -131,6 +131,9 @@
               pkgs.pre-commit
               pkgs.bws
               pkgs.kubectl
+              # velero CLI for the backup-verification integration checks (CI
+              # only; dctl never shells out to it, so it is not a runtimeTool).
+              pkgs.velero
             ];
             # Local kubeconfig target.
             KUBECONFIG = ".kubeconfig";

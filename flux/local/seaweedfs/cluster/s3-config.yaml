@@ -1,0 +1,27 @@
+---
+# Static S3 identity SeaweedFS accepts (default is anonymous). LOCAL TEST ONLY:
+# these are well-known, non-secret credentials for a disposable in-cluster store.
+# The matching Velero credential lives in ../../backup/credential.yaml and
+# must stay in sync.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: seaweedfs-s3-config
+  namespace: velero
+type: Opaque
+stringData:
+  seaweedfs_s3_config.json: |
+    {
+      "identities": [
+        {
+          "name": "local-backup",
+          "credentials": [
+            {
+              "accessKey": "localbackup",
+              "secretKey": "localbackupsecret"
+            }
+          ],
+          "actions": ["Admin"]
+        }
+      ]
+    }

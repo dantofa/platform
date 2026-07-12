@@ -1,0 +1,19 @@
+---
+# The provider-agnostic contract the Velero stack consumes (backup-credential
+# Secret + backup-target ConfigMap in the velero namespace), pointed at the
+# in-cluster SeaweedFS S3 endpoint instead of a cloud bucket. The velero
+# namespace is ensured by `dctl local cluster bootstrap`, so this stack has no
+# prerequisites; the velero stack depends on it so the credential/target exist
+# before Velero installs.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: backup
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./flux/local/backup
+  prune: true
+  sourceRef:
+    kind: OCIRepository
+    name: platform

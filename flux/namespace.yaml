@@ -1,9 +1,0 @@
----
-# Where Velero runs and where `dctl` writes the backup credential Secret
-# (spaces-backup-credentials) and coordinates ConfigMap (spaces-backup-target).
-# dctl also ensures this namespace at link time, so the Secret write never
-# races Flux; this manifest keeps it reconcilable from Git.
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: velero

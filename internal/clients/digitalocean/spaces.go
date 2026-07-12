@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -48,6 +49,7 @@ func spacesEndpoint(region string) string {
 var (
 	_ core.SpacesAPI         = (*SpacesClient)(nil)
 	_ core.BucketProvisioner = (*SpacesClient)(nil)
+	_ core.BucketUnlinker    = (*SpacesClient)(nil)
 )
 
 func resolveRegion(region string) string {
@@ -153,13 +155,14 @@ func (c *SpacesClient) CreateBucket(ctx context.Context, name string) error {
 	return nil
 }
 
-// DeleteBucket deletes a bucket (must be empty).
+// DeleteBucket deletes a bucket (must be empty). Idempotent: an absent bucket is
+// not an error.
 func (c *SpacesClient) DeleteBucket(ctx context.Context, name string) error {
 	err := c.retry(func() error {
 		_, err := c.s3.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(name)})
 		return err
 	})
-	if err != nil {
+	if err != nil && !isNotFound(err) {
 		return apiError(err)
 	}
 	return nil
@@ -223,6 +226,77 @@ func (c *SpacesClient) RevokeCredential(ctx context.Context, accessKey string) e
 	return nil
 }
 
+// ScopedKeys returns the access key ids of the dctl-minted Spaces keys granted
+// on the bucket. Requires a DO token. Implements core.BucketUnlinker.
+func (c *SpacesClient) ScopedKeys(ctx context.Context, bucket string) ([]string, error) {
+	if c.doClient == nil {
+		return nil, MissingCredentials(fmt.Sprintf(
+			"a DigitalOcean token (--token / $%s) is required to list Spaces keys.", tokenEnv,
+		))
+	}
+	var keys []string
+	opt := &godo.ListOptions{PerPage: 200}
+	for {
+		page, resp, err := c.doClient.SpacesKeys.List(ctx, opt)
+		if err != nil {
+			return nil, apiError(err)
+		}
+		for _, k := range page {
+			if !strings.HasPrefix(k.Name, "dctl-") {
+				continue
+			}
+			for _, g := range k.Grants {
+				if g.Bucket == bucket {
+					keys = append(keys, k.AccessKey)
+					break
+				}
+			}
+		}
+		if resp.Links == nil || resp.Links.IsLastPage() {
+			break
+		}
+		next, err := resp.Links.CurrentPage()
+		if err != nil {
+			return nil, apiError(err)
+		}
+		opt.Page = next + 1
+	}
+	return keys, nil
+}
+
+// EmptyBucket deletes every object version and delete marker in the bucket
+// (versioning is enabled, so plain deletes would only add markers). A no-op if
+// the bucket is already absent. Implements core.BucketUnlinker.
+func (c *SpacesClient) EmptyBucket(ctx context.Context, bucket string) error {
+	p := s3.NewListObjectVersionsPaginator(c.s3, &s3.ListObjectVersionsInput{Bucket: aws.String(bucket)})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			if isNotFound(err) {
+				return nil
+			}
+			return apiError(err)
+		}
+		ids := make([]s3types.ObjectIdentifier, 0, len(page.Versions)+len(page.DeleteMarkers))
+		for _, v := range page.Versions {
+			ids = append(ids, s3types.ObjectIdentifier{Key: v.Key, VersionId: v.VersionId})
+		}
+		for _, m := range page.DeleteMarkers {
+			ids = append(ids, s3types.ObjectIdentifier{Key: m.Key, VersionId: m.VersionId})
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if _, err := c.s3.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(bucket),
+			Delete: &s3types.Delete{Objects: ids, Quiet: aws.Bool(true)},
+		}); err != nil {
+			return apiError(err)
+		}
+	}
+	return nil
+}
+
 // retry runs an S3 op, retrying transient auth failures when using an ephemeral
 // key (a freshly-minted Spaces key can take a few seconds to become valid).
 // Static credentials are called once, so a genuine auth error isn't masked.
@@ -247,6 +321,19 @@ func alreadyOwned(err error) bool {
 	if errors.As(err, &api) {
 		switch api.ErrorCode() {
 		case "BucketAlreadyOwnedByYou", "BucketAlreadyExists":
+			return true
+		}
+	}
+	return false
+}
+
+// isNotFound reports whether an S3 error means the bucket does not exist, so
+// empty/delete can treat teardown of an absent bucket as success.
+func isNotFound(err error) bool {
+	var api smithy.APIError
+	if errors.As(err, &api) {
+		switch api.ErrorCode() {
+		case "NoSuchBucket", "NotFound":
 			return true
 		}
 	}

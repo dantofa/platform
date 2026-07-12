@@ -54,7 +54,7 @@ func newSpaceCmd() *cobra.Command {
 
 	del := &cobra.Command{
 		Use:   "delete <name>",
-		Short: "Delete a bucket (must be empty).",
+		Short: "Delete a bucket. Idempotent: succeeds if already absent (must be empty otherwise).",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withSpaces(cmd, region, token, func(ctx context.Context, client *doclient.SpacesClient) error {
@@ -66,8 +66,28 @@ func newSpaceCmd() *cobra.Command {
 		},
 	}
 
-	space.AddCommand(list, create, del, newSpaceLinkCmd(&region, &token))
+	space.AddCommand(list, create, del, newSpaceLinkCmd(&region, &token), newSpaceUnlinkCmd(&region, &token))
 	return space
+}
+
+func newSpaceUnlinkCmd(region, token *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "unlink <bucket>",
+		Short: "Tear down a backup bucket: revoke its scoped key(s), empty and delete it.",
+		Long: "Reverse of `link`: revoke the bucket-scoped Spaces key(s) dctl minted " +
+			"for the bucket, empty the bucket (all object versions), and delete it. " +
+			"Idempotent. Use in CI/preview teardown after a backup has run.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withSpaces(cmd, *region, *token, func(ctx context.Context, client *doclient.SpacesClient) error {
+				res, err := docore.Unlink(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
+				return render.JSON(res)
+			})
+		},
+	}
 }
 
 func newSpaceLinkCmd(region, token *string) *cobra.Command {

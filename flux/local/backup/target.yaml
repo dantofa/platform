@@ -1,0 +1,13 @@
+---
+# Backup coordinates the local `velero` Kustomization substitutes into the Velero
+# HelmRelease. endpoint is the in-cluster SeaweedFS S3 service (plain HTTP);
+# region is a dummy (SeaweedFS ignores it, but the AWS SDK requires a value).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-target
+  namespace: velero
+data:
+  bucket: local-backup
+  region: us-east-1
+  endpoint: http://backup-s3.velero.svc.cluster.local:8333

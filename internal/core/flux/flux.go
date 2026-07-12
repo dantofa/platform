@@ -14,7 +14,12 @@ const (
 	DefaultSourceName   = "platform"
 	DefaultSourceURL    = "https://github.com/dantofa/platform"
 	DefaultSourceBranch = "master"
-	DefaultSourcePath   = "./flux"
+	// DefaultSourcePath is the remote/DOKS reconcile root (Velero backup stack);
+	// local (kind) clusters reconcile DefaultLocalSourcePath instead.
+	DefaultSourcePath = "./flux/cluster"
+	// DefaultLocalSourcePath is the local/kind reconcile root: the SeaweedFS
+	// backend that stands in for a cloud bucket plus the shared Velero stack.
+	DefaultLocalSourcePath = "./flux/local"
 )
 
 // Engine is the Flux surface this package depends on, satisfied by the clients
@@ -26,6 +31,8 @@ type Engine interface {
 	DeleteGitSource(ctx context.Context, name string) error
 	CreateKustomization(ctx context.Context, name, source, path string) error
 	DeleteKustomization(ctx context.Context, name string) error
+	CreateOCISource(ctx context.Context, name, url, tag string) error
+	CreateOCIKustomization(ctx context.Context, name, source, path string) error
 }
 
 // SourceSpec describes a GitRepository source to register.
@@ -89,6 +96,36 @@ func AddKustomization(ctx context.Context, e Engine, spec KustomizationSpec) (Ku
 // RemoveKustomization deletes a Kustomization.
 func RemoveKustomization(ctx context.Context, e Engine, name string) error {
 	return e.DeleteKustomization(ctx, name)
+}
+
+// LocalBootstrapResult reports the OCI source + kustomization a local bootstrap
+// registered.
+type LocalBootstrapResult struct {
+	Source        string `json:"source"`
+	URL           string `json:"url"`
+	Tag           string `json:"tag"`
+	Kustomization string `json:"kustomization"`
+	Path          string `json:"path"`
+}
+
+// BootstrapLocal installs Flux and points it at an OCIRepository (the artifact
+// `dctl local cluster push` publishes to the in-cluster kind registry),
+// reconciling path from it. The kustomization is named after the source. This
+// is the local (kind) analogue of Bootstrap; the GitOps content it reconciles
+// stands up an in-cluster backup target instead of linking a cloud bucket.
+func BootstrapLocal(ctx context.Context, e Engine, version, name, url, tag, path string) (LocalBootstrapResult, error) {
+	if err := e.Install(ctx, version); err != nil {
+		return LocalBootstrapResult{}, err
+	}
+	if err := e.CreateOCISource(ctx, name, url, tag); err != nil {
+		return LocalBootstrapResult{}, err
+	}
+	if err := e.CreateOCIKustomization(ctx, name, name, path); err != nil {
+		return LocalBootstrapResult{}, err
+	}
+	return LocalBootstrapResult{
+		Source: name, URL: url, Tag: tag, Kustomization: name, Path: path,
+	}, nil
 }
 
 // Bootstrap installs Flux, registers the given source, and registers a

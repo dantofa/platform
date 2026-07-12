@@ -79,6 +79,52 @@ func RevokePrior(ctx context.Context, p BucketProvisioner, priorAccessKey string
 	return p.RevokeCredential(ctx, priorAccessKey)
 }
 
+// BucketUnlinker is the DigitalOcean-authenticated surface for tearing a backup
+// bucket down: revoking the keys dctl scoped to it, and emptying then deleting
+// the bucket. Like BucketProvisioner it is driven from outside the cluster (the
+// DO token stays with the caller).
+type BucketUnlinker interface {
+	// ScopedKeys returns the access key ids of the dctl-minted keys scoped to the
+	// bucket (empty when none remain).
+	ScopedKeys(ctx context.Context, bucket string) ([]string, error)
+	// RevokeCredential deletes a key by its access key id.
+	RevokeCredential(ctx context.Context, accessKey string) error
+	// EmptyBucket deletes every object (all versions) in the bucket. A no-op if
+	// the bucket is already absent.
+	EmptyBucket(ctx context.Context, bucket string) error
+	// DeleteBucket deletes the (now empty) bucket. A no-op if already absent.
+	DeleteBucket(ctx context.Context, name string) error
+}
+
+// UnlinkResult reports what a teardown removed.
+type UnlinkResult struct {
+	Bucket      string   `json:"bucket"`
+	RevokedKeys []string `json:"revoked_keys"`
+}
+
+// Unlink tears down a bucket previously linked for backups: it revokes the
+// bucket-scoped keys dctl minted, empties the bucket (all object versions), and
+// deletes it. Idempotent — safe to re-run after a partial teardown (already
+// revoked keys and an absent bucket are no-ops).
+func Unlink(ctx context.Context, u BucketUnlinker, bucket string) (UnlinkResult, error) {
+	keys, err := u.ScopedKeys(ctx, bucket)
+	if err != nil {
+		return UnlinkResult{}, err
+	}
+	for _, key := range keys {
+		if err := u.RevokeCredential(ctx, key); err != nil {
+			return UnlinkResult{}, err
+		}
+	}
+	if err := u.EmptyBucket(ctx, bucket); err != nil {
+		return UnlinkResult{}, err
+	}
+	if err := u.DeleteBucket(ctx, bucket); err != nil {
+		return UnlinkResult{}, err
+	}
+	return UnlinkResult{Bucket: bucket, RevokedKeys: keys}, nil
+}
+
 // VeleroCredentialsFile renders the AWS-style credentials file Velero's S3
 // plugin expects (a single default profile), for the cluster-side Secret.
 func VeleroCredentialsFile(c Credential) string {

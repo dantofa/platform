@@ -41,6 +41,14 @@ func (f *fakeEngine) DeleteKustomization(_ context.Context, name string) error {
 	return f.record("delete-ks:" + name)
 }
 
+func (f *fakeEngine) CreateOCISource(_ context.Context, name, url, tag string) error {
+	return f.record("create-oci-source:" + name + ":" + url + ":" + tag)
+}
+
+func (f *fakeEngine) CreateOCIKustomization(_ context.Context, name, source, path string) error {
+	return f.record("create-oci-ks:" + name + ":" + source + ":" + path)
+}
+
 func eq(t *testing.T, got, want string) {
 	t.Helper()
 	if got != want {
@@ -95,7 +103,7 @@ func TestBootstrapOrdersInstallSourceThenKustomization(t *testing.T) {
 	want := []string{
 		"install:v2.3.0",
 		"create-source:platform:" + DefaultSourceURL + ":master",
-		"create-ks:platform:platform:./flux",
+		"create-ks:platform:platform:" + DefaultSourcePath,
 	}
 	if len(e.events) != len(want) {
 		t.Fatalf("events = %v, want %v", e.events, want)
@@ -106,7 +114,30 @@ func TestBootstrapOrdersInstallSourceThenKustomization(t *testing.T) {
 	// The kustomization is named after and reconciles from the source.
 	eq(t, res.Source, "platform")
 	eq(t, res.Kustomization, "platform")
-	eq(t, res.Path, "./flux")
+	eq(t, res.Path, DefaultSourcePath)
+}
+
+func TestBootstrapLocalOrdersInstallOCISourceThenKustomization(t *testing.T) {
+	e := &fakeEngine{}
+	res, err := BootstrapLocal(context.Background(), e, "",
+		"platform", "oci://kind-registry:5000/local", "latest", DefaultLocalSourcePath)
+	if err != nil {
+		t.Fatalf("BootstrapLocal: %v", err)
+	}
+	want := []string{
+		"install:",
+		"create-oci-source:platform:oci://kind-registry:5000/local:latest",
+		"create-oci-ks:platform:platform:" + DefaultLocalSourcePath,
+	}
+	if len(e.events) != len(want) {
+		t.Fatalf("events = %v, want %v", e.events, want)
+	}
+	for i := range want {
+		eq(t, e.events[i], want[i])
+	}
+	eq(t, res.Source, "platform")
+	eq(t, res.Kustomization, "platform")
+	eq(t, res.Path, DefaultLocalSourcePath)
 }
 
 func TestBootstrapStopsOnInstallFailure(t *testing.T) {

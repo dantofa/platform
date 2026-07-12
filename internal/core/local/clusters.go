@@ -17,8 +17,17 @@ const (
 	DefaultArtifactTag  = "latest"
 	DefaultArtifactPath = "flux/"
 
-	registryInClusterPort = 5000
+	// RegistryInClusterPort is the port the kind nodes reach the OCI registry
+	// on (the in-cluster address an OCIRepository pulls from).
+	RegistryInClusterPort = 5000
 )
+
+// InClusterArtifactURL is the oci:// URL an in-cluster OCIRepository uses to
+// pull the artifact `PushArtifact` publishes (the kind-node-reachable address,
+// without the tag).
+func InClusterArtifactURL(registryName, name string) string {
+	return fmt.Sprintf("oci://%s:%d/%s", registryName, RegistryInClusterPort, name)
+}
 
 // LocalClusterAPI is the local-cluster surface this package depends on.
 type LocalClusterAPI interface {
@@ -90,7 +99,7 @@ func CreateCluster(ctx context.Context, client LocalClusterAPI, name, registryNa
 	return CreateResult{
 		Name:              name,
 		Registry:          fmt.Sprintf("localhost:%d", registryPort),
-		RegistryInCluster: fmt.Sprintf("%s:%d", registryName, registryInClusterPort),
+		RegistryInCluster: fmt.Sprintf("%s:%d", registryName, RegistryInClusterPort),
 	}, nil
 }
 

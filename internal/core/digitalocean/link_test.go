@@ -106,6 +106,74 @@ func TestConfigMapData(t *testing.T) {
 	}
 }
 
+type fakeUnlinker struct {
+	keys      []string
+	keysErr   error
+	events    []string
+	emptyErr  error
+	deleteErr error
+}
+
+func (u *fakeUnlinker) ScopedKeys(_ context.Context, bucket string) ([]string, error) {
+	u.events = append(u.events, "keys:"+bucket)
+	return u.keys, u.keysErr
+}
+
+func (u *fakeUnlinker) RevokeCredential(_ context.Context, accessKey string) error {
+	u.events = append(u.events, "revoke:"+accessKey)
+	return nil
+}
+
+func (u *fakeUnlinker) EmptyBucket(_ context.Context, bucket string) error {
+	u.events = append(u.events, "empty:"+bucket)
+	return u.emptyErr
+}
+
+func (u *fakeUnlinker) DeleteBucket(_ context.Context, name string) error {
+	u.events = append(u.events, "delete:"+name)
+	return u.deleteErr
+}
+
+func TestUnlinkRevokesThenEmptiesThenDeletes(t *testing.T) {
+	u := &fakeUnlinker{keys: []string{"AK1", "AK2"}}
+	res, err := Unlink(context.Background(), u, "backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"keys:backup", "revoke:AK1", "revoke:AK2", "empty:backup", "delete:backup"}
+	if !reflect.DeepEqual(u.events, want) {
+		t.Errorf("wrong ordering:\n got %v\nwant %v", u.events, want)
+	}
+	if !reflect.DeepEqual(res.RevokedKeys, []string{"AK1", "AK2"}) || res.Bucket != "backup" {
+		t.Errorf("wrong result: %+v", res)
+	}
+}
+
+func TestUnlinkWithNoKeysStillEmptiesAndDeletes(t *testing.T) {
+	u := &fakeUnlinker{}
+	if _, err := Unlink(context.Background(), u, "backup"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"keys:backup", "empty:backup", "delete:backup"}
+	if !reflect.DeepEqual(u.events, want) {
+		t.Errorf("wrong ordering:\n got %v\nwant %v", u.events, want)
+	}
+}
+
+func TestUnlinkStopsOnEmptyFailure(t *testing.T) {
+	sentinel := errors.New("empty boom")
+	u := &fakeUnlinker{keys: []string{"AK1"}, emptyErr: sentinel}
+	if _, err := Unlink(context.Background(), u, "backup"); !errors.Is(err, sentinel) {
+		t.Fatalf("expected empty error, got %v", err)
+	}
+	// The bucket delete must not run if emptying failed.
+	for _, e := range u.events {
+		if e == "delete:backup" {
+			t.Error("delete should not run after empty failed")
+		}
+	}
+}
+
 type fakeStore struct {
 	prior    string
 	priorErr error

@@ -1,0 +1,9 @@
+---
+# The in-cluster SeaweedFS S3 backend, in two nested Kustomizations: the operator
+# (its own `seaweedfs` namespace) and the cluster (in the `velero` namespace,
+# alongside Velero).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - operator.yaml
+  - cluster.yaml

@@ -85,6 +85,22 @@ func (c *Client) CreateKustomization(ctx context.Context, name, source, path str
 		"--prune=true", "--interval", "10m", "--namespace", fluxNamespace)
 }
 
+// CreateOCISource registers (create-or-update) an OCIRepository source at the
+// given tag. --insecure allows the plain-HTTP in-cluster kind registry.
+func (c *Client) CreateOCISource(ctx context.Context, name, url, tag string) error {
+	return c.run(ctx, "create", "source", "oci", name,
+		"--url", url, "--tag", tag, "--insecure", "--interval", "1m",
+		"--namespace", fluxNamespace)
+}
+
+// CreateOCIKustomization registers (create-or-update) a Kustomization
+// reconciling the given path from the named OCIRepository source.
+func (c *Client) CreateOCIKustomization(ctx context.Context, name, source, path string) error {
+	return c.run(ctx, "create", "kustomization", name,
+		"--source", "OCIRepository/"+source, "--path", path,
+		"--prune=true", "--interval", "10m", "--namespace", fluxNamespace)
+}
+
 // DeleteKustomization removes a Kustomization.
 func (c *Client) DeleteKustomization(ctx context.Context, name string) error {
 	return c.run(ctx, "delete", "kustomization", name,

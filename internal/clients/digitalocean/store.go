@@ -9,8 +9,8 @@ import (
 
 // Defaults for the cluster-side backup wiring.
 const (
-	DefaultSecretName    = "spaces-backup-credentials"
-	DefaultConfigMapName = "spaces-backup-target"
+	DefaultSecretName    = "backup-credential"
+	DefaultConfigMapName = "backup-target"
 
 	// credentialsKey is the Secret data key holding the Velero credentials file.
 	credentialsKey = "cloud"
