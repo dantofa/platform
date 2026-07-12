@@ -135,9 +135,17 @@ func BuildUpdateSpec(tags *[]string, ha bool) UpdateSpec {
 	return UpdateSpec{Tags: tags, AutoUpgrade: true, SurgeUpgrade: true, HA: ha}
 }
 
-// ListClusters returns every cluster.
+// ListClusters returns every cluster. The slice is never nil, so an empty result
+// renders as a JSON `[]` rather than `null`.
 func ListClusters(ctx context.Context, client ClusterAPI) ([]Cluster, error) {
-	return client.List(ctx)
+	clusters, err := client.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if clusters == nil {
+		clusters = []Cluster{}
+	}
+	return clusters, nil
 }
 
 // CreateCluster creates a cluster and returns what DigitalOcean reports back.

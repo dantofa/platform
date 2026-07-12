@@ -80,17 +80,28 @@ func newLocalBootstrapCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "bootstrap [name]",
-		Short: "Install Flux on a kind cluster and reconcile the local GitOps tree.",
-		Long: "Install Flux, register an OCIRepository pointing at the in-cluster " +
-			"kind registry, and reconcile ./flux/local from it. Run once after " +
-			"`create`, then `push` publishes the artifact. The local tree stands up " +
-			"an in-cluster SeaweedFS backup target so the Velero stack runs without " +
-			"a cloud provider.",
+		Short: "Publish the local GitOps tree, install Flux, and wire it up.",
+		Long: "Self-contained bring-up: publish the working-tree flux/ to the " +
+			"in-cluster registry, install Flux, and point an OCIRepository + " +
+			"Kustomization at ./flux/local so it reconciles immediately. Run once " +
+			"after `create` (no separate `push` needed first); use `push` afterwards " +
+			"to publish edits. The local tree stands up an in-cluster SeaweedFS " +
+			"backup target so the Velero stack runs without a cloud provider.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			name := nameArg(args)
-			kubeconfig, err := localcore.GetKubeconfig(ctx, localclient.NewKindClient(), name)
+			kindClient := localclient.NewKindClient()
+
+			// Publish the working-tree flux/ tree first, so the OCIRepository the
+			// bootstrap registers can pull it immediately (no separate `push`).
+			pushed, err := localcore.PushArtifact(ctx, kindClient, artifactName, tag,
+				localcore.DefaultArtifactPath, localcore.DefaultRegistryPort)
+			if err != nil {
+				return render.Fail(err)
+			}
+
+			kubeconfig, err := localcore.GetKubeconfig(ctx, kindClient, name)
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -112,7 +123,10 @@ func newLocalBootstrapCmd() *cobra.Command {
 				return render.Fail(err)
 			}
 
-			url := localcore.InClusterArtifactURL(registryName, artifactName)
+			url, err := localcore.InClusterArtifactURL(ctx, kindClient, registryName, artifactName)
+			if err != nil {
+				return render.Fail(err)
+			}
 			res, err := fluxcore.BootstrapLocal(ctx, fluxclient.New(kubePath),
 				fluxVersion, sourceName, url, tag, sourcePath)
 			if err != nil {
@@ -120,6 +134,7 @@ func newLocalBootstrapCmd() *cobra.Command {
 			}
 			return render.JSON(map[string]string{
 				"cluster":     name,
+				"artifact":    pushed.Artifact,
 				"flux_source": res.Source,
 				"oci_url":     res.URL,
 				"tag":         res.Tag,
@@ -156,14 +171,17 @@ func newLocalCreateCmd() *cobra.Command {
 	var (
 		registryName string
 		registryPort int
+		workers      int
+		verbose      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "create [name]",
 		Short: "Create a kind cluster wired to an internal OCI registry.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			result, err := localcore.CreateCluster(cmd.Context(), localclient.NewKindClient(),
-				nameArg(args), registryName, registryPort)
+			client := localclient.NewKindClient(localclient.WithProgress(verbose))
+			result, err := localcore.CreateCluster(cmd.Context(), client,
+				nameArg(args), registryName, registryPort, workers)
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -175,6 +193,10 @@ func newLocalCreateCmd() *cobra.Command {
 		"Name of the internal OCI registry container.")
 	f.IntVar(&registryPort, "registry-port", localcore.DefaultRegistryPort,
 		"Host port the registry is pushable on.")
+	f.IntVar(&workers, "workers", localcore.DefaultWorkerNodes,
+		"Number of worker nodes (0 for a single-node control-plane).")
+	f.BoolVar(&verbose, "verbose", false,
+		"Stream kind's provisioning progress to stderr as it runs.")
 	return cmd
 }
 

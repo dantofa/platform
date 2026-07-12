@@ -15,26 +15,39 @@ const (
 	DefaultRegistryPort = 5001
 	DefaultArtifactName = "local"
 	DefaultArtifactTag  = "latest"
-	DefaultArtifactPath = "flux/"
+	// DefaultArtifactPath is the project root: the OCI artifact mirrors the repo
+	// (so the flux/ prefix is present and manifest paths match the git-sourced
+	// DOKS flow); the client whitelists just flux/ so it stays lean and never
+	// packages source, secrets, or build outputs.
+	DefaultArtifactPath = "."
+	// DefaultWorkerNodes is the worker count a cluster gets unless overridden
+	// (control-plane + 3 workers = 4 nodes).
+	DefaultWorkerNodes = 3
 
 	// RegistryInClusterPort is the port the kind nodes reach the OCI registry
 	// on (the in-cluster address an OCIRepository pulls from).
 	RegistryInClusterPort = 5000
 )
 
-// InClusterArtifactURL is the oci:// URL an in-cluster OCIRepository uses to
-// pull the artifact `PushArtifact` publishes (the kind-node-reachable address,
-// without the tag).
-func InClusterArtifactURL(registryName, name string) string {
-	return fmt.Sprintf("oci://%s:%d/%s", registryName, RegistryInClusterPort, name)
+// InClusterArtifactURL is the oci:// URL an in-cluster OCIRepository uses to pull
+// the artifact `PushArtifact` publishes (without the tag). It resolves the
+// registry's IP on the kind network: cluster DNS (CoreDNS) cannot resolve the
+// registry's docker container name, so a Flux pod must pull by IP.
+func InClusterArtifactURL(ctx context.Context, client LocalClusterAPI, registryName, name string) (string, error) {
+	ip, err := client.RegistryIP(ctx, registryName)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("oci://%s:%d/%s", ip, RegistryInClusterPort, name), nil
 }
 
 // LocalClusterAPI is the local-cluster surface this package depends on.
 type LocalClusterAPI interface {
 	List(ctx context.Context) ([]string, error)
-	Create(ctx context.Context, name, registryName string, registryPort int) error
+	Create(ctx context.Context, name, registryName string, registryPort, workers int) error
 	Delete(ctx context.Context, name string) error
 	GetKubeconfig(ctx context.Context, name string) (string, error)
+	RegistryIP(ctx context.Context, registryName string) (string, error)
 	GitProvenance(ctx context.Context) (source, revision string, err error)
 	PushArtifact(ctx context.Context, url, path, source, revision string) error
 	ReconcileSource(ctx context.Context, name string) error
@@ -79,13 +92,22 @@ func contains(items []string, target string) bool {
 	return false
 }
 
-// ListClusters returns the names of the local clusters.
+// ListClusters returns the names of the local clusters. The slice is never nil,
+// so an empty result renders as a JSON `[]` rather than `null`.
 func ListClusters(ctx context.Context, client LocalClusterAPI) ([]string, error) {
-	return client.List(ctx)
+	clusters, err := client.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if clusters == nil {
+		clusters = []string{}
+	}
+	return clusters, nil
 }
 
-// CreateCluster creates a kind cluster wired to an internal OCI registry.
-func CreateCluster(ctx context.Context, client LocalClusterAPI, name, registryName string, registryPort int) (CreateResult, error) {
+// CreateCluster creates a kind cluster (one control-plane + workers worker
+// nodes) wired to an internal OCI registry.
+func CreateCluster(ctx context.Context, client LocalClusterAPI, name, registryName string, registryPort, workers int) (CreateResult, error) {
 	existing, err := client.List(ctx)
 	if err != nil {
 		return CreateResult{}, err
@@ -93,7 +115,7 @@ func CreateCluster(ctx context.Context, client LocalClusterAPI, name, registryNa
 	if contains(existing, name) {
 		return CreateResult{}, &LocalClusterExistsError{Name: name}
 	}
-	if err := client.Create(ctx, name, registryName, registryPort); err != nil {
+	if err := client.Create(ctx, name, registryName, registryPort, workers); err != nil {
 		return CreateResult{}, err
 	}
 	return CreateResult{
@@ -119,8 +141,11 @@ func DeleteCluster(ctx context.Context, client LocalClusterAPI, name string) (st
 	return name, nil
 }
 
-// PushArtifact publishes path as an OCI artifact to the local registry and
-// reconciles the Flux OCIRepository named name.
+// PushArtifact publishes path as an OCI artifact to the local registry and nudges
+// Flux to pull it. Publishing is what matters; the reconcile is a best-effort
+// immediate trigger — the OCIRepository may not exist yet (a first push, or
+// bootstrap's own pre-push), and Flux re-pulls on its interval regardless. So a
+// reconcile failure does not fail the push; the result's Reconciled is "" then.
 func PushArtifact(ctx context.Context, client LocalClusterAPI, name, tag, path string, registryPort int) (PushResult, error) {
 	reference := fmt.Sprintf("localhost:%d/%s:%s", registryPort, name, tag)
 	source, revision, err := client.GitProvenance(ctx)
@@ -130,12 +155,13 @@ func PushArtifact(ctx context.Context, client LocalClusterAPI, name, tag, path s
 	if err := client.PushArtifact(ctx, "oci://"+reference, path, source, revision); err != nil {
 		return PushResult{}, err
 	}
+	reconciled := name
 	if err := client.ReconcileSource(ctx, name); err != nil {
-		return PushResult{}, err
+		reconciled = ""
 	}
 	return PushResult{
 		Artifact: reference, Path: path, Source: source,
-		Revision: revision, Reconciled: name,
+		Revision: revision, Reconciled: reconciled,
 	}, nil
 }
 

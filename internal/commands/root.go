@@ -6,9 +6,12 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -42,9 +45,14 @@ func NewRootCmd() *cobra.Command {
 	return root
 }
 
-// Execute runs the root command and returns the process exit code.
+// Execute runs the root command and returns the process exit code. The context
+// is cancelled on SIGINT/SIGTERM, so an interrupt (Ctrl-C) propagates through
+// cmd.Context() to the exec.CommandContext calls in the client adapters — a
+// long child like `kind create` is signalled instead of being orphaned.
 func Execute() int {
-	if err := NewRootCmd().Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := NewRootCmd().ExecuteContext(ctx); err != nil {
 		if !errors.Is(err, render.ErrHandled) {
 			// A cobra/usage error that a command didn't render itself.
 			fmt.Fprintln(os.Stderr, err)

@@ -20,3 +20,11 @@ spec:
     crds: CreateReplace
   upgrade:
     crds: CreateReplace
+  values:
+    # Disable the admission webhook: the chart self-signs its serving cert via
+    # kube-webhook-certgen, which leaves the webhook's caBundle untrusted here and
+    # blocks the Seaweed CR ("x509: signed by unknown authority"). This is a
+    # disposable local test store, so we don't need admission defaulting/validation
+    # — the operator's controller still reconciles the Seaweed cluster.
+    webhook:
+      enabled: false

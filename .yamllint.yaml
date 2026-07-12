@@ -4,6 +4,10 @@ extends: default
 ignore: |
   .venv/
   .devbox/
+  # Local, gitignored artifacts: the kubeconfig kind/dctl write into the
+  # dev-shell's KUBECONFIG target, and the `just build` binary output.
+  .kubeconfig
+  dist/
 
 rules:
   # Allow longer lines; CI/config YAML often has long action refs and URLs.

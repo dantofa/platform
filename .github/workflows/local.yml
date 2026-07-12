@@ -44,10 +44,11 @@ jobs:
           test "$count" -eq 4
           curl -fsS http://localhost:5001/v2/ > /dev/null
 
+      # bootstrap is self-contained: it publishes the flux/ tree, installs Flux,
+      # and wires the OCIRepository/Kustomization (a separate `push` is only for
+      # iterating on edits afterwards).
       - name: Bootstrap the backup stack
-        run: |
-          nix run .#default -- local cluster bootstrap
-          nix run .#default -- local cluster push
+        run: nix run .#default -- local cluster bootstrap
 
       - name: Verify Velero backup
         run: nix develop --command just verify-backup

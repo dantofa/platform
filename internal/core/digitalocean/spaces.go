@@ -22,9 +22,17 @@ type SpacesAPI interface {
 	DeleteBucket(ctx context.Context, name string) error
 }
 
-// ListBuckets returns all Spaces buckets.
+// ListBuckets returns all Spaces buckets. The slice is never nil, so an empty
+// result renders as a JSON `[]` rather than `null`.
 func ListBuckets(ctx context.Context, client SpacesAPI) ([]Bucket, error) {
-	return client.ListBuckets(ctx)
+	buckets, err := client.ListBuckets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if buckets == nil {
+		buckets = []Bucket{}
+	}
+	return buckets, nil
 }
 
 // CreateBucket creates a bucket, surfacing the raw provider error if it already
