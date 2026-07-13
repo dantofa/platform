@@ -66,7 +66,7 @@
           src = ./.;
           # Recomputed automatically by `just vendor-hash` (which `just update`
           # runs); run that standalone after any other go.sum change.
-          vendorHash = "sha256-uqMhv4DQxXE0SfNp3kXm4Opt2mu0SFRulMpXysUOywM=";
+          vendorHash = "sha256-4sSTBfLwZO9J2dvjkSheA+vaQfeuZEZxmiisu/g+aYs=";
 
           subPackages = [ "cmd/dctl" ];
           env.CGO_ENABLED = "0";

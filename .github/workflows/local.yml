@@ -33,7 +33,7 @@ jobs:
           purge-primary-key: never
 
       - name: Create local cluster
-        run: nix run .#default -- local cluster create
+        run: nix run .#default -- local cluster create --workers 1
 
       - name: Verify provisioning
         run: |
