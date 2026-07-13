@@ -75,6 +75,11 @@ jobs:
           nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME"
           --source-branch "$HEAD_REF"
 
+      # Gate on the whole GitOps tree reconciling (generous timeout for cold
+      # image pulls) before checking the backup itself.
+      - name: Verify Kustomizations reconciled
+        run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
+
       - name: Verify Velero backup
         run: nix develop --command just verify-backup
 

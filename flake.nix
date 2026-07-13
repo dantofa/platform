@@ -11,14 +11,18 @@
       inherit (nixpkgs) lib;
 
       # A sandboxed Nix build has no .git, so we derive the version purely from
-      # the flake source: the commit date as a PEP 440-style dev segment plus the
-      # short rev. Downstream tracks this flake by rev (e.g. a Nix input on
-      # `master` that `nix flake update` locks to the latest SHA), so
-      # `dctl --version` names the exact commit and changes when they update.
-      # There are no release tags in this model; a flake cannot read git tags.
+      # the flake source: a CalVer date (the commit's, YYYY.MM.DD) plus the short
+      # rev as build metadata — the two things that actually identify an untagged
+      # commit. Downstream tracks this flake by rev (a Nix input on `master` that
+      # `nix flake update` locks to the latest SHA), so `dctl --version` names the
+      # exact commit and changes when they update. There are no release tags in
+      # this model; a flake cannot read git tags. (Real semver arrives with the
+      # operator phase, where container tags / CRD versions force it.)
       version =
-        "0.0.0.dev"
-        + (builtins.substring 0 8 (self.lastModifiedDate or "00000000"))
+        let
+          d = self.lastModifiedDate or "00000000";
+        in
+        "${builtins.substring 0 4 d}.${builtins.substring 4 2 d}.${builtins.substring 6 2 d}"
         + "+g"
         + (self.shortRev or self.dirtyShortRev or "dev");
 
@@ -62,7 +66,7 @@
           src = ./.;
           # Recompute with `just update` / after changing go.sum. Set to
           # lib.fakeHash and rebuild to learn the new value.
-          vendorHash = "sha256-VNmPNhs1qvBvyULehp4gwAdjqytzFcKdw504YkfFtv8=";
+          vendorHash = "sha256-FWZbBp+eHRjWE8veiywaS3TPop/zhna48eaBT3v8QfA=";
 
           subPackages = [ "cmd/dctl" ];
           env.CGO_ENABLED = "0";

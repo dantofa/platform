@@ -132,16 +132,18 @@ and pre-commit pick it up automatically.
 ## Versioning & releasing
 
 The version is **derived purely from the flake source**, not git tags (a flake
-can't read tags). `flake.nix` computes `0.0.0.dev<lastModifiedDate>+g<shortRev>`
-and stamps it into the binary via `-ldflags -X …/internal/version.Version`.
-`just build` mirrors this from `git` for local builds. Do **not** add a static
-version; the rev is the identifier.
+can't read tags). `flake.nix` computes a CalVer `<YYYY.MM.DD>+g<shortRev>` (the
+commit's date + short rev; `-dirty` on an unclean tree) and stamps it into the
+binary via `-ldflags -X …/internal/version.Version`. `just build` mirrors this
+from `git` for local builds. Do **not** add a static version; the rev is the
+identifier. (Real semver is deferred to the operator phase, where container
+image tags / CRD versions force it.)
 
 - Consumers track this flake by rev (a Nix input on `master`); `nix flake update`
   locks the latest commit, and `dctl --version` names it. There is no
   version-bearing tag scheme.
-- `nix.yml` asserts `dctl --version` matches `0.0.0.dev*+g*` (guards a broken
-  version injection).
+- `nix.yml` asserts `dctl --version` matches `*.*.*+g*` (guards a broken version
+  injection — the bare "dev" fallback fails it).
 
 ## Repository configuration (as code)
 

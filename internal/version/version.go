@@ -6,5 +6,6 @@ package version
 //
 //	-ldflags "-X github.com/dantofa/platform/internal/version.Version=1.2.3"
 //
-// The flake stamps it with a source-derived value (0.0.0.dev<date>+g<rev>).
+// The flake stamps it with a source-derived CalVer value (<YYYY.MM.DD>+g<rev>,
+// with a -dirty suffix on an unclean tree).
 var Version = "dev"

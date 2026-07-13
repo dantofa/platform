@@ -21,6 +21,8 @@ func TestRootWiresDOGroupAndSubcommands(t *testing.T) {
 		{"flux", "source", "delete"},
 		{"flux", "kustomization", "create"},
 		{"flux", "kustomization", "delete"},
+		{"flux", "kustomization", "list"},
+		{"flux", "kustomization", "verify"},
 		{"local", "cluster", "list"},
 		{"local", "cluster", "create"},
 		{"local", "cluster", "bootstrap"},

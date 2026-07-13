@@ -5,9 +5,12 @@
 package flux
 
 import (
+	"time"
+
 	"github.com/spf13/cobra"
 
 	fluxclient "github.com/dantofa/platform/internal/clients/flux"
+	"github.com/dantofa/platform/internal/clients/kube"
 	fluxcore "github.com/dantofa/platform/internal/core/flux"
 	"github.com/dantofa/platform/internal/render"
 )
@@ -78,8 +81,85 @@ func newKustomizationCmd(kubeconfig *string) *cobra.Command {
 		Aliases: []string{"ks"},
 		Short:   "Manage Flux Kustomizations.",
 	}
-	ks.AddCommand(newKustomizationCreateCmd(kubeconfig), newKustomizationDeleteCmd(kubeconfig))
+	ks.AddCommand(
+		newKustomizationCreateCmd(kubeconfig),
+		newKustomizationDeleteCmd(kubeconfig),
+		newKustomizationListCmd(kubeconfig),
+		newKustomizationVerifyCmd(kubeconfig),
+	)
 	return ks
+}
+
+func newKustomizationListCmd(kubeconfig *string) *cobra.Command {
+	var namespace string
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List Flux Kustomizations with their reconciliation status.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			kc, err := kube.NewFromPath(*kubeconfig)
+			if err != nil {
+				return render.Fail(err)
+			}
+			statuses, err := fluxcore.ListKustomizations(cmd.Context(), kc, namespace)
+			if err != nil {
+				return render.Fail(err)
+			}
+			return render.JSON(statuses)
+		},
+	}
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "",
+		"Limit to one namespace (default: all namespaces).")
+	return cmd
+}
+
+func newKustomizationVerifyCmd(kubeconfig *string) *cobra.Command {
+	var (
+		namespace string
+		wait      bool
+		timeout   time.Duration
+	)
+	cmd := &cobra.Command{
+		Use:   "verify",
+		Short: "Gate on Flux Kustomizations: exit non-zero unless all are reconciled.",
+		Long: "Print each Kustomization with its reconciliation status (same output " +
+			"as `list`) and exit non-zero unless every one is reconciled — so it can " +
+			"gate CI after a bootstrap/apply. --wait polls until they converge.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			kc, err := kube.NewFromPath(*kubeconfig)
+			if err != nil {
+				return render.Fail(err)
+			}
+			var (
+				statuses []fluxcore.KustomizationStatus
+				ok       bool
+			)
+			if wait {
+				statuses, ok, err = fluxcore.VerifyKustomizationsWait(cmd.Context(), kc, namespace, timeout, 5*time.Second)
+			} else {
+				statuses, ok, err = fluxcore.VerifyKustomizations(cmd.Context(), kc, namespace)
+			}
+			if err != nil {
+				return render.Fail(err)
+			}
+			if err := render.JSON(statuses); err != nil {
+				return err
+			}
+			// Gate: the list is already printed; a not-ready result is a non-zero
+			// exit without re-printing.
+			if !ok {
+				return render.ErrHandled
+			}
+			return nil
+		},
+	}
+	f := cmd.Flags()
+	f.StringVarP(&namespace, "namespace", "n", "",
+		"Limit to one namespace (default: all namespaces).")
+	f.BoolVar(&wait, "wait", false, "Poll until every Kustomization is reconciled or --timeout elapses.")
+	f.DurationVar(&timeout, "timeout", 5*time.Minute, "Maximum time to wait with --wait.")
+	return cmd
 }
 
 func newKustomizationCreateCmd(kubeconfig *string) *cobra.Command {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // fakeEngine records the flux operations invoked against it, in order.
@@ -138,6 +139,105 @@ func TestBootstrapLocalOrdersInstallOCISourceThenKustomization(t *testing.T) {
 	eq(t, res.Source, "platform")
 	eq(t, res.Kustomization, "platform")
 	eq(t, res.Path, DefaultLocalSourcePath)
+}
+
+type fakeKustomizationStatuser struct {
+	statuses   []KustomizationStatus
+	err        error
+	readyAfter int // become all-ready on this call number (0 = never flip)
+	calls      int
+}
+
+func (f *fakeKustomizationStatuser) KustomizationStatuses(context.Context, string) ([]KustomizationStatus, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.readyAfter > 0 && f.calls >= f.readyAfter {
+		out := make([]KustomizationStatus, len(f.statuses))
+		for i, s := range f.statuses {
+			s.Status, s.Ready = "Current", true
+			out[i] = s
+		}
+		return out, nil
+	}
+	return f.statuses, nil
+}
+
+func TestListKustomizationsEmptyIsNonNil(t *testing.T) {
+	got, err := ListKustomizations(context.Background(), &fakeKustomizationStatuser{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A nil slice marshals to JSON `null`; a list command must render `[]`.
+	if got == nil {
+		t.Fatal("expected a non-nil empty slice, got nil")
+	}
+}
+
+func TestVerifyKustomizationsOKWhenAllReady(t *testing.T) {
+	f := &fakeKustomizationStatuser{statuses: []KustomizationStatus{
+		{Name: "platform", Status: "Current", Ready: true},
+		{Name: "velero", Status: "Current", Ready: true},
+	}}
+	statuses, ok, err := VerifyKustomizations(context.Background(), f, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("expected ok")
+	}
+	if len(statuses) != 2 {
+		t.Errorf("expected 2 statuses, got %d", len(statuses))
+	}
+}
+
+func TestVerifyKustomizationsFailsWhenAnyNotReady(t *testing.T) {
+	f := &fakeKustomizationStatuser{statuses: []KustomizationStatus{
+		{Name: "platform", Status: "Current", Ready: true},
+		{Name: "velero", Status: "Failed", Ready: false},
+	}}
+	statuses, ok, err := VerifyKustomizations(context.Background(), f, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("expected not ok")
+	}
+	// The full list is still returned so the caller can show every status.
+	if len(statuses) != 2 {
+		t.Errorf("expected 2 statuses, got %d", len(statuses))
+	}
+}
+
+func TestVerifyKustomizationsWaitConverges(t *testing.T) {
+	f := &fakeKustomizationStatuser{
+		statuses:   []KustomizationStatus{{Name: "platform", Status: "InProgress", Ready: false}},
+		readyAfter: 2, // not ready on the first poll, ready on the second
+	}
+	_, ok, err := VerifyKustomizationsWait(context.Background(), f, "", time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("expected ok after convergence")
+	}
+	if f.calls < 2 {
+		t.Errorf("expected at least 2 polls, got %d", f.calls)
+	}
+}
+
+func TestVerifyKustomizationsWaitTimesOut(t *testing.T) {
+	f := &fakeKustomizationStatuser{
+		statuses: []KustomizationStatus{{Name: "velero", Status: "Failed", Ready: false}},
+	}
+	statuses, ok, err := VerifyKustomizationsWait(context.Background(), f, "", 20*time.Millisecond, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || len(statuses) != 1 {
+		t.Errorf("expected a timed-out report with the problem, got ok=%v statuses=%v", ok, statuses)
+	}
 }
 
 func TestBootstrapStopsOnInstallFailure(t *testing.T) {

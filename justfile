@@ -5,11 +5,13 @@ test *args:
   go test ./... {{args}}
 
 # Build the dctl binary into dist/, stamping the source-derived version the same
-# way the flake does (0.0.0.dev<date>+g<rev>) so a local build reports it too.
+# way the flake does (<YYYY.MM.DD>+g<rev>, with -dirty on an unclean tree) so a
+# local build reports it too.
 build:
   #!/usr/bin/env bash
   set -euo pipefail
-  version="0.0.0.dev$(git show -s --format=%cd --date=format:'%Y%m%d' HEAD)+g$(git rev-parse --short HEAD)"
+  version="$(git show -s --format=%cd --date=format:'%Y.%m.%d' HEAD)+g$(git rev-parse --short HEAD)"
+  if [ -n "$(git status --porcelain)" ]; then version="$version-dirty"; fi
   # CGO_ENABLED=0 matches the flake package: a static binary with no libc link,
   # so dist/dctl behaves identically to the shipped artifact. Go's build cache
   # makes this incremental (unlike the hermetic `nix build`).

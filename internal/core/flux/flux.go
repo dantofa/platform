@@ -5,7 +5,10 @@
 // neither cobra nor a client SDK and is reused by the future operator.
 package flux
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Defaults for the platform GitOps source a cluster is bootstrapped against.
 // The composable commands and `do cluster bootstrap` share these so the base
@@ -96,6 +99,73 @@ func AddKustomization(ctx context.Context, e Engine, spec KustomizationSpec) (Ku
 // RemoveKustomization deletes a Kustomization.
 func RemoveKustomization(ctx context.Context, e Engine, name string) error {
 	return e.DeleteKustomization(ctx, name)
+}
+
+// KustomizationStatus is one Flux Kustomization's reconciliation state. Status is
+// the kstatus verdict (Current/InProgress/Failed/...); Ready is the gate.
+type KustomizationStatus struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Ready     bool   `json:"ready"`
+	Message   string `json:"message,omitempty"`
+}
+
+// KustomizationStatuser reads the reconciliation status of the Flux
+// Kustomizations on a cluster (satisfied by the kube adapter, via kstatus).
+type KustomizationStatuser interface {
+	KustomizationStatuses(ctx context.Context, namespace string) ([]KustomizationStatus, error)
+}
+
+// ListKustomizations returns every Kustomization's status (never nil, so an empty
+// cluster renders as a JSON `[]`).
+func ListKustomizations(ctx context.Context, s KustomizationStatuser, namespace string) ([]KustomizationStatus, error) {
+	statuses, err := s.KustomizationStatuses(ctx, namespace)
+	if err != nil {
+		return nil, err
+	}
+	if statuses == nil {
+		statuses = []KustomizationStatus{}
+	}
+	return statuses, nil
+}
+
+// VerifyKustomizations returns every Kustomization's status plus whether all are
+// ready — the gate: ok is false if any Kustomization is not reconciled.
+func VerifyKustomizations(ctx context.Context, s KustomizationStatuser, namespace string) (statuses []KustomizationStatus, ok bool, err error) {
+	statuses, err = ListKustomizations(ctx, s, namespace)
+	if err != nil {
+		return nil, false, err
+	}
+	ok = true
+	for _, st := range statuses {
+		if !st.Ready {
+			ok = false
+		}
+	}
+	return statuses, ok, nil
+}
+
+// VerifyKustomizationsWait polls VerifyKustomizations until every Kustomization
+// is ready or the timeout elapses, returning the last statuses + ok either way
+// (so a timed-out gate still reports what is not reconciled). It turns the
+// snapshot gate into a convergence gate for CI after a bootstrap/apply.
+func VerifyKustomizationsWait(ctx context.Context, s KustomizationStatuser, namespace string, timeout, interval time.Duration) (statuses []KustomizationStatus, ok bool, err error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		statuses, ok, err = VerifyKustomizations(ctx, s, namespace)
+		if err != nil {
+			return nil, false, err
+		}
+		if ok || !time.Now().Before(deadline) {
+			return statuses, ok, nil
+		}
+		select {
+		case <-ctx.Done():
+			return statuses, ok, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }
 
 // LocalBootstrapResult reports the OCI source + kustomization a local bootstrap
