@@ -78,27 +78,32 @@ func (c *Client) DeleteGitSource(ctx context.Context, name string) error {
 }
 
 // CreateKustomization registers (create-or-update) a Kustomization reconciling
-// the given path from the named GitRepository source.
-func (c *Client) CreateKustomization(ctx context.Context, name, source, path string) error {
+// the given path from the named source. sourceKind is the source CRD kind
+// (GitRepository or OCIRepository) the sourceRef points at.
+func (c *Client) CreateKustomization(ctx context.Context, name, sourceKind, source, path string) error {
 	return c.run(ctx, "create", "kustomization", name,
-		"--source", "GitRepository/"+source, "--path", path,
+		"--source", sourceKind+"/"+source, "--path", path,
 		"--prune=true", "--interval", "10m", "--namespace", fluxNamespace)
 }
 
 // CreateOCISource registers (create-or-update) an OCIRepository source at the
-// given tag. --insecure allows the plain-HTTP in-cluster kind registry.
-func (c *Client) CreateOCISource(ctx context.Context, name, url, tag string) error {
-	return c.run(ctx, "create", "source", "oci", name,
-		"--url", url, "--tag", tag, "--insecure", "--interval", "1m",
-		"--namespace", fluxNamespace)
+// given tag. insecure allows a plain-HTTP registry (the in-cluster kind
+// registry); leave it off for TLS registries such as ghcr.io.
+func (c *Client) CreateOCISource(ctx context.Context, name, url, tag string, insecure bool) error {
+	args := []string{
+		"create", "source", "oci", name,
+		"--url", url, "--tag", tag, "--interval", "1m", "--namespace", fluxNamespace,
+	}
+	if insecure {
+		args = append(args, "--insecure")
+	}
+	return c.run(ctx, args...)
 }
 
-// CreateOCIKustomization registers (create-or-update) a Kustomization
-// reconciling the given path from the named OCIRepository source.
-func (c *Client) CreateOCIKustomization(ctx context.Context, name, source, path string) error {
-	return c.run(ctx, "create", "kustomization", name,
-		"--source", "OCIRepository/"+source, "--path", path,
-		"--prune=true", "--interval", "10m", "--namespace", fluxNamespace)
+// DeleteOCISource removes an OCIRepository source.
+func (c *Client) DeleteOCISource(ctx context.Context, name string) error {
+	return c.run(ctx, "delete", "source", "oci", name,
+		"--silent", "--namespace", fluxNamespace)
 }
 
 // DeleteKustomization removes a Kustomization.

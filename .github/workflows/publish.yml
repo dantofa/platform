@@ -1,0 +1,48 @@
+---
+name: publish
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  NO_COLOR: "1"
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # push the OCI artifact to ghcr.io
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'go.sum', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # Publish the flux/ GitOps tree as an OCI artifact under the immutable
+      # commit SHA (for pinning/rollback) and a moving `latest` tag (what
+      # `dctl {do} cluster bootstrap` tracks by default). The package inherits the
+      # dantofa org from the repo; make it public once so anonymous OCIRepository
+      # pulls succeed without an in-cluster pull secret.
+      - name: Publish OCI artifact
+        env:
+          OCI_CREDS: ${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}
+        run: |
+          repo="oci://ghcr.io/${{ github.repository }}"
+          nix develop --command just publish "$repo:${{ github.sha }}" "${{ github.sha }}"
+          nix develop --command just publish "$repo:latest" "${{ github.sha }}"

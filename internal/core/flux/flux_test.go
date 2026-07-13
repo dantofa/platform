@@ -34,20 +34,24 @@ func (f *fakeEngine) DeleteGitSource(_ context.Context, name string) error {
 	return f.record("delete-source:" + name)
 }
 
-func (f *fakeEngine) CreateKustomization(_ context.Context, name, source, path string) error {
-	return f.record("create-ks:" + name + ":" + source + ":" + path)
+func (f *fakeEngine) CreateKustomization(_ context.Context, name, sourceKind, source, path string) error {
+	return f.record("create-ks:" + name + ":" + sourceKind + "/" + source + ":" + path)
 }
 
 func (f *fakeEngine) DeleteKustomization(_ context.Context, name string) error {
 	return f.record("delete-ks:" + name)
 }
 
-func (f *fakeEngine) CreateOCISource(_ context.Context, name, url, tag string) error {
+func (f *fakeEngine) CreateOCISource(_ context.Context, name, url, tag string, _ bool) error {
 	return f.record("create-oci-source:" + name + ":" + url + ":" + tag)
 }
 
-func (f *fakeEngine) CreateOCIKustomization(_ context.Context, name, source, path string) error {
-	return f.record("create-oci-ks:" + name + ":" + source + ":" + path)
+func (f *fakeEngine) DeleteOCISource(_ context.Context, name string) error {
+	return f.record("delete-oci-source:" + name)
+}
+
+func (f *fakeEngine) ApplyReconcileRoot(_ context.Context, root ReconcileRoot) error {
+	return f.record("apply-root:" + root.Name + ":" + root.SourceKind + "/" + root.SourceName + ":" + root.Path)
 }
 
 func eq(t *testing.T, got, want string) {
@@ -59,31 +63,43 @@ func eq(t *testing.T, got, want string) {
 
 func TestAddSource(t *testing.T) {
 	e := &fakeEngine{}
-	res, err := AddSource(context.Background(), e, SourceSpec{Name: "app", URL: "https://git/app", Branch: "main"})
+	res, err := AddSource(context.Background(), e, SourceSpec{Type: SourceGit, Name: "app", URL: "https://git/app", Revision: "main"})
 	if err != nil {
 		t.Fatalf("AddSource: %v", err)
 	}
 	eq(t, res.Source, "app")
+	eq(t, res.Kind, "GitRepository")
 	eq(t, res.URL, "https://git/app")
-	eq(t, res.Branch, "main")
+	eq(t, res.Revision, "main")
 	eq(t, e.events[0], "create-source:app:https://git/app:main")
+}
+
+func TestAddSourceOCI(t *testing.T) {
+	e := &fakeEngine{}
+	res, err := AddSource(context.Background(), e, SourceSpec{Type: SourceOCI, Name: "app", URL: "oci://reg/app", Revision: "latest"})
+	if err != nil {
+		t.Fatalf("AddSource: %v", err)
+	}
+	eq(t, res.Kind, "OCIRepository")
+	eq(t, e.events[0], "create-oci-source:app:oci://reg/app:latest")
 }
 
 func TestAddKustomization(t *testing.T) {
 	e := &fakeEngine{}
-	res, err := AddKustomization(context.Background(), e, KustomizationSpec{Name: "app", Source: "platform", Path: "./flux"})
+	res, err := AddKustomization(context.Background(), e, KustomizationSpec{Type: SourceOCI, Name: "app", Source: "platform", Path: "./flux"})
 	if err != nil {
 		t.Fatalf("AddKustomization: %v", err)
 	}
 	eq(t, res.Kustomization, "app")
+	eq(t, res.SourceKind, "OCIRepository")
 	eq(t, res.Source, "platform")
 	eq(t, res.Path, "./flux")
-	eq(t, e.events[0], "create-ks:app:platform:./flux")
+	eq(t, e.events[0], "create-ks:app:OCIRepository/platform:./flux")
 }
 
 func TestRemoveSourceAndKustomization(t *testing.T) {
 	e := &fakeEngine{}
-	if err := RemoveSource(context.Background(), e, "app"); err != nil {
+	if err := RemoveSource(context.Background(), e, SourceGit, "app"); err != nil {
 		t.Fatalf("RemoveSource: %v", err)
 	}
 	if err := RemoveKustomization(context.Background(), e, "app"); err != nil {
@@ -93,18 +109,52 @@ func TestRemoveSourceAndKustomization(t *testing.T) {
 	eq(t, e.events[1], "delete-ks:app")
 }
 
-func TestBootstrapOrdersInstallSourceThenKustomization(t *testing.T) {
+func TestBootstrapOCIOrdersInstallSourceThenRoots(t *testing.T) {
 	e := &fakeEngine{}
-	res, err := Bootstrap(context.Background(), e, "v2.3.0",
-		SourceSpec{Name: DefaultSourceName, URL: DefaultSourceURL, Branch: DefaultSourceBranch},
-		DefaultSourcePath)
+	// The local shape: an OCI source and two roots, cluster after requirements.
+	roots := []ReconcileRoot{
+		{Name: LocalRequirementsRootName, Path: DefaultLocalSourcePath},
+		{Name: ClusterRootName, Path: DefaultSourcePath, DependsOn: []string{LocalRequirementsRootName}, PropagateSource: true},
+	}
+	res, err := Bootstrap(context.Background(), e, e, "",
+		SourceSpec{Type: SourceOCI, Name: DefaultSourceName, URL: "oci://kind-registry:5000/local", Revision: "latest"},
+		roots)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	want := []string{
+		"install:",
+		"create-oci-source:platform:oci://kind-registry:5000/local:latest",
+		"apply-root:local-requirements:OCIRepository/platform:" + DefaultLocalSourcePath,
+		"apply-root:cluster:OCIRepository/platform:" + DefaultSourcePath,
+	}
+	if len(e.events) != len(want) {
+		t.Fatalf("events = %v, want %v", e.events, want)
+	}
+	for i := range want {
+		eq(t, e.events[i], want[i])
+	}
+	// Bootstrap fills each root's source from the registered source.
+	eq(t, res.Source, "platform")
+	eq(t, res.SourceKind, "OCIRepository")
+	if len(res.Kustomizations) != 2 || res.Kustomizations[0] != LocalRequirementsRootName || res.Kustomizations[1] != ClusterRootName {
+		t.Fatalf("kustomizations = %v", res.Kustomizations)
+	}
+}
+
+func TestBootstrapGitRegistersGitSource(t *testing.T) {
+	e := &fakeEngine{}
+	// The DOKS/downstream shape: a git source and a single cluster root.
+	res, err := Bootstrap(context.Background(), e, e, "v2.3.0",
+		SourceSpec{Type: SourceGit, Name: DefaultSourceName, URL: DefaultSourceURL, Revision: DefaultSourceBranch},
+		[]ReconcileRoot{{Name: ClusterRootName, Path: DefaultSourcePath, PropagateSource: true}})
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 	want := []string{
 		"install:v2.3.0",
 		"create-source:platform:" + DefaultSourceURL + ":master",
-		"create-ks:platform:platform:" + DefaultSourcePath,
+		"apply-root:cluster:GitRepository/platform:" + DefaultSourcePath,
 	}
 	if len(e.events) != len(want) {
 		t.Fatalf("events = %v, want %v", e.events, want)
@@ -112,33 +162,8 @@ func TestBootstrapOrdersInstallSourceThenKustomization(t *testing.T) {
 	for i := range want {
 		eq(t, e.events[i], want[i])
 	}
-	// The kustomization is named after and reconciles from the source.
-	eq(t, res.Source, "platform")
-	eq(t, res.Kustomization, "platform")
-	eq(t, res.Path, DefaultSourcePath)
-}
-
-func TestBootstrapLocalOrdersInstallOCISourceThenKustomization(t *testing.T) {
-	e := &fakeEngine{}
-	res, err := BootstrapLocal(context.Background(), e, "",
-		"platform", "oci://kind-registry:5000/local", "latest", DefaultLocalSourcePath)
-	if err != nil {
-		t.Fatalf("BootstrapLocal: %v", err)
-	}
-	want := []string{
-		"install:",
-		"create-oci-source:platform:oci://kind-registry:5000/local:latest",
-		"create-oci-ks:platform:platform:" + DefaultLocalSourcePath,
-	}
-	if len(e.events) != len(want) {
-		t.Fatalf("events = %v, want %v", e.events, want)
-	}
-	for i := range want {
-		eq(t, e.events[i], want[i])
-	}
-	eq(t, res.Source, "platform")
-	eq(t, res.Kustomization, "platform")
-	eq(t, res.Path, DefaultLocalSourcePath)
+	eq(t, res.SourceKind, "GitRepository")
+	eq(t, res.Revision, "master")
 }
 
 type fakeKustomizationStatuser struct {
@@ -243,10 +268,12 @@ func TestVerifyKustomizationsWaitTimesOut(t *testing.T) {
 func TestBootstrapStopsOnInstallFailure(t *testing.T) {
 	sentinel := errors.New("install boom")
 	e := &fakeEngine{failOn: "install:", failErr: sentinel}
-	if _, err := Bootstrap(context.Background(), e, "", SourceSpec{Name: "x"}, "./flux"); !errors.Is(err, sentinel) {
+	if _, err := Bootstrap(context.Background(), e, e, "",
+		SourceSpec{Type: SourceOCI, Name: "x"},
+		[]ReconcileRoot{{Name: ClusterRootName, Path: "./flux"}}); !errors.Is(err, sentinel) {
 		t.Fatalf("expected install error, got %v", err)
 	}
-	// No source/kustomization attempted after install failed.
+	// No source/root attempted after install failed.
 	if len(e.events) != 1 {
 		t.Fatalf("expected only the install attempt, got %v", e.events)
 	}

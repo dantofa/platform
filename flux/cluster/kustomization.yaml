@@ -1,10 +1,12 @@
 ---
-# The remote/DOKS reconcile root, reconciled by the `platform` Flux
-# Kustomization that `dctl do cluster bootstrap` registers (sourceRef: this repo,
-# path: ./flux/cluster). No variable substitution happens here; the
-# cluster-specific values are substituted into ./flux/cluster/velero by the
-# nested `velero` Kustomization below.
+# The shared, source-agnostic stacks every cluster loads, reconciled by the
+# `cluster` reconcile root that `dctl {do,local} cluster bootstrap` applies
+# (path: ./flux/cluster). Each nested Kustomization's sourceRef uses
+# ${source_kind}/${source_name}, filled by the root's postBuild.substitute per
+# how the cluster was bootstrapped (GitRepository for DOKS/git, OCIRepository for
+# local). Add a shared stack by appending one file here.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - velero.yaml
+  - kyverno.yaml

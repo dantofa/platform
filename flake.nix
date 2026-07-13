@@ -64,9 +64,9 @@
           pname = "dctl";
           inherit version;
           src = ./.;
-          # Recompute with `just update` / after changing go.sum. Set to
-          # lib.fakeHash and rebuild to learn the new value.
-          vendorHash = "sha256-FWZbBp+eHRjWE8veiywaS3TPop/zhna48eaBT3v8QfA=";
+          # Recomputed automatically by `just vendor-hash` (which `just update`
+          # runs); run that standalone after any other go.sum change.
+          vendorHash = "sha256-uqMhv4DQxXE0SfNp3kXm4Opt2mu0SFRulMpXysUOywM=";
 
           subPackages = [ "cmd/dctl" ];
           env.CGO_ENABLED = "0";

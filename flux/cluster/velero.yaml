@@ -1,10 +1,11 @@
 ---
-# Nested Kustomization that reconciles ./flux/cluster/velero WITH the
-# cluster-specific backup coordinates substituted in. substituteFrom reads the
-# ConfigMap that `dctl do cluster bootstrap` / `dctl do space link` writes into
-# this namespace (keys: bucket, region, endpoint), so the same manifests target
-# whichever bucket a cluster was linked to. The source lives in flux-system
-# (registered by bootstrap), hence the cross-namespace sourceRef.
+# The Velero backup stack, one of the shared stacks the `cluster` reconcile root
+# loads on every cluster type. sourceRef is source-agnostic: the ${source_kind}/
+# ${source_name} placeholders are filled by the root's postBuild.substitute
+# (GitRepository/OCIRepository per how the cluster was bootstrapped). Its own
+# substituteFrom binds the SeaweedFS/Spaces coordinates from the backup-target
+# ConfigMap, which the root ordering guarantees exists first (local: the
+# local-requirements root; DOKS: `dctl do cluster bootstrap`).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -15,8 +16,8 @@ spec:
   path: ./flux/cluster/velero
   prune: true
   sourceRef:
-    kind: GitRepository
-    name: platform
+    kind: ${source_kind}
+    name: ${source_name}
     namespace: flux-system
   postBuild:
     substituteFrom:

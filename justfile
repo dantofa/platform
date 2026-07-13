@@ -17,6 +17,18 @@ build:
   # makes this incremental (unlike the hermetic `nix build`).
   CGO_ENABLED=0 go build -ldflags "-s -w -X github.com/dantofa/platform/internal/version.Version=$version" -o dist/dctl ./cmd/dctl
 
+# Publish the flux/ GitOps tree as an OCI artifact to a registry (CI publishes it
+# to ghcr.io on merge to master; `dctl {do} cluster bootstrap` pulls it by
+# default). Mirrors `dctl local cluster push` but targets an external registry,
+# whitelisting flux/ so the artifact's paths match the cluster flow. url carries
+# the tag (oci://host/repo:tag); revision annotates the source commit. Pass
+# registry creds via OCI_CREDS=user:token; without it flux uses the ambient
+# keychain.
+publish url revision:
+  flux push artifact "{{url}}" --path . \
+    --source "https://github.com/dantofa/platform" --revision "{{revision}}" \
+    --ignore-paths "/*,!/flux/" ${OCI_CREDS:+--creds $OCI_CREDS}
+
 shellcheck:
   #!/usr/bin/env bash
   # Lint the shebang (script) recipes in this justfile with shellcheck. Line
@@ -89,12 +101,29 @@ verify-backup:
 # flake's `vendorHash` must be recomputed (set it to lib.fakeHash, `nix build`,
 # copy the reported hash) — that applies to Renovate's gomod PRs too. Run this
 # deliberately — freshness is a manual operation, never a merge gate.
-update:
+update: && vendor-hash
   #!/usr/bin/env bash
   set -euo pipefail
   go get -u ./...
   go mod tidy
   nix flake update
+
+# Recompute the flake vendorHash for the current go.sum: blank it to fakeHash so
+# `nix build` reports the real hash, write that back, and confirm the package
+# builds. Run by `just update`; also run standalone on a Renovate gomod PR, which
+# changes go.sum but cannot recompute the hash itself.
+vendor-hash:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  fake="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  sed -i "s|vendorHash = \"sha256-[^\"]*\";|vendorHash = \"$fake\";|" flake.nix
+  got="$(nix build .#default 2>&1 | sed -n 's|.*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\).*|\1|p' | head -1 || true)"
+  if [ -z "$got" ]; then
+    echo "error: could not determine vendorHash from nix build output" >&2
+    exit 1
+  fi
+  sed -i "s|vendorHash = \"sha256-[^\"]*\";|vendorHash = \"$got\";|" flake.nix
+  nix build ".#default" >/dev/null
 
 sast:
   #!/usr/bin/env bash
