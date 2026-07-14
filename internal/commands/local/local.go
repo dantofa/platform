@@ -184,10 +184,10 @@ func newLocalListCmd() *cobra.Command {
 
 func newLocalCreateCmd() *cobra.Command {
 	var (
-		registryName string
-		registryPort int
-		workers      int
-		verbose      bool
+		registryName           string
+		registryPort           int
+		controlPlanes, workers int
+		verbose                bool
 	)
 	cmd := &cobra.Command{
 		Use:   "create [name]",
@@ -196,7 +196,7 @@ func newLocalCreateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client := localclient.NewKindClient(localclient.WithProgress(verbose))
 			result, err := localcore.CreateCluster(cmd.Context(), client,
-				nameArg(args), registryName, registryPort, workers)
+				nameArg(args), registryName, registryPort, controlPlanes, workers)
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -208,6 +208,8 @@ func newLocalCreateCmd() *cobra.Command {
 		"Name of the internal OCI registry container.")
 	f.IntVar(&registryPort, "registry-port", localcore.DefaultRegistryPort,
 		"Host port the registry is pushable on.")
+	f.IntVar(&controlPlanes, "control-planes", localcore.DefaultControlPlaneNodes,
+		"Number of control-plane nodes (>1 for an HA control plane).")
 	f.IntVar(&workers, "workers", localcore.DefaultWorkerNodes,
 		"Number of worker nodes (0 for a single-node control-plane).")
 	f.BoolVar(&verbose, "verbose", false,
