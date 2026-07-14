@@ -2,7 +2,7 @@
 # The Kyverno policy engine, a shared stack the `cluster` reconcile root loads on
 # every cluster type. Like velero.yaml its sourceRef is source-agnostic: the
 # ${source_kind}/${source_name} placeholders are filled by the root's
-# postBuild.substitute.
+# postBuild.substituteFrom the cluster-vars ConfigMap.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

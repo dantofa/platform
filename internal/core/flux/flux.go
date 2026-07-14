@@ -28,7 +28,7 @@ const (
 	// DefaultSourcePath is the shared, source-agnostic reconcile root every
 	// cluster loads (Velero + Kyverno). Its nested Kustomizations reference the
 	// source via ${source_kind}/${source_name}, filled in by the reconcile
-	// root's postBuild.substitute.
+	// root's postBuild.substituteFrom the cluster-vars ConfigMap.
 	DefaultSourcePath = "./flux/cluster"
 	// DefaultLocalSourcePath is the local/kind-only requirements root: the
 	// SeaweedFS backend that stands in for a cloud bucket plus the backup
@@ -40,6 +40,22 @@ const (
 	// local-only ./flux/local requirements ahead of it on kind clusters.
 	ClusterRootName           = "cluster"
 	LocalRequirementsRootName = "local-requirements"
+
+	// ClusterVarsName is the flux-system ConfigMap dctl writes at bootstrap with
+	// this cluster's identity. Substituting reconcile roots pull it via
+	// postBuild.substituteFrom, so the shared stacks (and downstream
+	// Kustomizations) resolve ${source_kind}/${source_name}/${base_domain}/etc.
+	// to per-cluster values. It is the single source of cluster-scoped variables.
+	ClusterVarsName = "cluster-vars"
+	// Cluster-vars keys. SourceKind/SourceName let the shared stacks bind their
+	// sourceRef; BaseDomain/ClusterName are the cluster's ingress FQDN and name.
+	VarSourceKind  = "source_kind"
+	VarSourceName  = "source_name"
+	VarBaseDomain  = "base_domain"
+	VarClusterName = "cluster_name"
+
+	// clusterVarsNamespace is where the ConfigMap and reconcile roots live.
+	clusterVarsNamespace = "flux-system"
 )
 
 // SourceType selects which Flux source kind a cluster is bootstrapped against.
@@ -75,9 +91,10 @@ func (t SourceType) DefaultRevision() string {
 }
 
 // Engine is the flux-CLI surface this package depends on, satisfied by the
-// clients adapter. It installs Flux and registers sources; the reconcile roots
-// go through ReconcileRootApplier instead (the flux CLI can't set
-// postBuild.substitute). Create operations are create-or-update (idempotent).
+// clients adapter. It installs Flux and registers sources; the cluster-vars
+// ConfigMap and reconcile roots go through Applier instead (the flux CLI can't
+// set postBuild.substituteFrom). Create operations are create-or-update
+// (idempotent).
 type Engine interface {
 	Install(ctx context.Context, version string) error
 	CreateGitSource(ctx context.Context, name, url, branch string) error
@@ -89,26 +106,29 @@ type Engine interface {
 }
 
 // ReconcileRoot is a top-level Flux Kustomization dctl applies as a CR during
-// bootstrap. When PropagateSource is set it carries a postBuild.substitute
-// providing source_kind/source_name, so the source-agnostic stacks it
-// reconciles resolve their sourceRef to this cluster's source. DependsOn orders
-// it after other roots. Both are things `flux create kustomization` can't
-// express, so bootstrap goes through the kube adapter.
+// bootstrap. When Substitute is set it carries a postBuild.substituteFrom the
+// cluster-vars ConfigMap, so the portable stacks it reconciles resolve
+// ${source_kind}/${source_name}/${base_domain}/etc. to this cluster's values.
+// DependsOn orders it after other roots. Both are things `flux create
+// kustomization` can't express, so bootstrap goes through the kube adapter.
 type ReconcileRoot struct {
 	Name       string
 	Path       string
 	SourceKind string // OCIRepository | GitRepository (this cluster's source)
 	SourceName string
 	DependsOn  []string // reconcile-root names in flux-system to wait for
-	// PropagateSource emits postBuild.substitute source_kind/source_name so a
-	// portable (source-agnostic) tree binds to SourceKind/SourceName. Leave it
-	// off for source-pinned trees to avoid running substitution over them.
-	PropagateSource bool
+	// Substitute pulls cluster-vars via postBuild.substituteFrom so a portable
+	// (source-agnostic) tree binds to this cluster's values. Leave it off for
+	// source-pinned trees with no ${...} placeholders, to avoid running
+	// substitution over them.
+	Substitute bool
 }
 
-// ReconcileRootApplier applies a ReconcileRoot as a Flux Kustomization CR
-// (create-or-update), satisfied by the kube adapter.
-type ReconcileRootApplier interface {
+// Applier is the cluster-side surface bootstrap needs beyond the flux CLI:
+// writing the cluster-vars ConfigMap and applying reconcile roots as
+// Kustomization CRs (both create-or-update). Satisfied by the kube adapter.
+type Applier interface {
+	ApplyConfigMap(ctx context.Context, namespace, name string, data map[string]string) error
 	ApplyReconcileRoot(ctx context.Context, root ReconcileRoot) error
 }
 
@@ -267,13 +287,14 @@ func VerifyKustomizationsWait(ctx context.Context, s KustomizationStatuser, name
 	}
 }
 
-// Bootstrap installs Flux, registers the source (oci or git per src.Type), and
-// applies the given reconcile roots as Kustomization CRs in order. Each root's
-// SourceKind/SourceName are filled from the registered source, so callers pass
-// roots describing only the paths and ordering. This one sequence serves every
-// cluster: DOKS passes a single `cluster` root, kind passes `local-requirements`
-// then `cluster`.
-func Bootstrap(ctx context.Context, e Engine, a ReconcileRootApplier, version string, src SourceSpec, roots []ReconcileRoot) (BootstrapResult, error) {
+// Bootstrap installs Flux, registers the source (oci or git per src.Type), writes
+// the cluster-vars ConfigMap (this cluster's source coordinates merged with the
+// caller's vars, e.g. base_domain/cluster_name), then applies the given reconcile
+// roots as Kustomization CRs in order. Each root's SourceKind/SourceName are
+// filled from the registered source, so callers pass roots describing only the
+// paths and ordering. This one sequence serves every cluster: DOKS passes a
+// single `cluster` root, kind passes `local-requirements` then `cluster`.
+func Bootstrap(ctx context.Context, e Engine, a Applier, version string, src SourceSpec, vars map[string]string, roots []ReconcileRoot) (BootstrapResult, error) {
 	if err := e.Install(ctx, version); err != nil {
 		return BootstrapResult{}, err
 	}
@@ -281,6 +302,18 @@ func Bootstrap(ctx context.Context, e Engine, a ReconcileRootApplier, version st
 		return BootstrapResult{}, err
 	}
 	kind := src.Type.FluxKind()
+
+	// The cluster-vars ConfigMap the substituting roots read: the source
+	// coordinates (always) plus the caller's cluster identity, which the roots
+	// must be able to resolve before they reconcile.
+	clusterVars := map[string]string{VarSourceKind: kind, VarSourceName: src.Name}
+	for k, v := range vars {
+		clusterVars[k] = v
+	}
+	if err := a.ApplyConfigMap(ctx, clusterVarsNamespace, ClusterVarsName, clusterVars); err != nil {
+		return BootstrapResult{}, err
+	}
+
 	names := make([]string, 0, len(roots))
 	for _, r := range roots {
 		r.SourceKind, r.SourceName = kind, src.Name

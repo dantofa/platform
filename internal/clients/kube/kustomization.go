@@ -10,17 +10,18 @@ import (
 	fluxcore "github.com/dantofa/platform/internal/core/flux"
 )
 
-var _ fluxcore.ReconcileRootApplier = (*Client)(nil)
+var _ fluxcore.Applier = (*Client)(nil)
 
-// rootNamespace is where the reconcile roots and Flux sources live.
+// rootNamespace is where the reconcile roots, Flux sources, and the cluster-vars
+// ConfigMap live.
 const rootNamespace = "flux-system"
 
 // ApplyReconcileRoot creates or updates a top-level Flux Kustomization CR for a
 // reconcile root. It applies the CR directly (rather than via `flux create
-// kustomization`) because the roots carry a postBuild.substitute and dependsOn
-// the flux CLI can't express. wait is always set so a root is Ready only once
-// the objects it applies are — which is what a downstream root's dependsOn and
-// the verify gate rely on. Implements fluxcore.ReconcileRootApplier.
+// kustomization`) because the roots carry a postBuild.substituteFrom and
+// dependsOn the flux CLI can't express. wait is always set so a root is Ready
+// only once the objects it applies are — which is what a downstream root's
+// dependsOn and the verify gate rely on. Implements fluxcore.Applier.
 func (c *Client) ApplyReconcileRoot(ctx context.Context, root fluxcore.ReconcileRoot) error {
 	spec := map[string]any{
 		"interval": "10m",
@@ -33,14 +34,14 @@ func (c *Client) ApplyReconcileRoot(ctx context.Context, root fluxcore.Reconcile
 			"namespace": rootNamespace,
 		},
 	}
-	if root.PropagateSource {
-		// Bind the source-agnostic stacks this root reconciles to this cluster's
-		// source. Only source_kind/source_name appear as ${...} in those stacks,
-		// so substitution touches nothing else.
+	if root.Substitute {
+		// Bind the portable stacks this root reconciles to this cluster's values
+		// (source coordinates, base_domain, ...) from the cluster-vars ConfigMap
+		// bootstrap writes. Only the ${...} tokens present in those stacks are
+		// substituted; other keys in the ConfigMap are ignored.
 		spec["postBuild"] = map[string]any{
-			"substitute": map[string]any{
-				"source_kind": root.SourceKind,
-				"source_name": root.SourceName,
+			"substituteFrom": []any{
+				map[string]any{"kind": "ConfigMap", "name": fluxcore.ClusterVarsName},
 			},
 		}
 	}

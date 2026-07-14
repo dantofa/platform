@@ -72,7 +72,8 @@ jobs:
         run: >-
           nix develop --command
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
-          nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME" --source-type git --source-revision "$HEAD_REF"
+          nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME"
+          --source-type git --source-revision "$HEAD_REF" --base-domain preview.dantofa.dev
 
       # Gate on the whole GitOps tree reconciling (generous timeout for cold
       # image pulls) before checking the backup itself.

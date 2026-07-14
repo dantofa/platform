@@ -196,7 +196,7 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 	var (
 		bucket, region, fluxVersion           string
 		sourceType, sourceURL, sourceRevision string
-		sourcePath, src                       string
+		sourcePath, src, baseDomain           string
 		namespace, secretName, configMapName  string
 	)
 	cmd := &cobra.Command{
@@ -260,10 +260,15 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 					sourceURL = fluxcore.DefaultOCISourceURL
 				}
 			}
+			vars := map[string]string{
+				fluxcore.VarBaseDomain:  baseDomain,
+				fluxcore.VarClusterName: cluster,
+			}
 			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), kc, fluxVersion,
 				fluxcore.SourceSpec{Type: st, Name: src, URL: sourceURL, Revision: sourceRevision},
+				vars,
 				[]fluxcore.ReconcileRoot{{
-					Name: fluxcore.ClusterRootName, Path: sourcePath, PropagateSource: true,
+					Name: fluxcore.ClusterRootName, Path: sourcePath, Substitute: true,
 				}})
 			if err != nil {
 				return render.Fail(err)
@@ -288,6 +293,8 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 	f.StringVar(&sourceRevision, "source-revision", "", `Source revision to track (default: "latest" for oci, "master" for git).`)
 	f.StringVar(&sourcePath, "source-path", fluxcore.DefaultSourcePath, "Path within the source that Flux reconciles.")
 	f.StringVar(&src, "source-name", fluxcore.DefaultSourceName, "Name of the Flux source and reconcile root.")
+	f.StringVar(&baseDomain, "base-domain", "", "Cluster ingress FQDN (${base_domain} in cluster-vars). Required.")
+	_ = cmd.MarkFlagRequired("base-domain")
 	f.StringVar(&namespace, "namespace", "velero", "Namespace for the credential Secret and coordinates ConfigMap (where Velero runs); created if absent.")
 	f.StringVar(&secretName, "secret-name", "", "Credential Secret name (default "+doclient.DefaultSecretName+").")
 	f.StringVar(&configMapName, "configmap-name", "", "Coordinates ConfigMap name (default "+doclient.DefaultConfigMapName+").")

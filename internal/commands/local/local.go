@@ -76,7 +76,7 @@ const backupNamespace = "velero"
 func newLocalBootstrapCmd() *cobra.Command {
 	var (
 		fluxVersion, registryName, artifactName, tag string
-		sourceName                                   string
+		sourceName, baseDomain                       string
 	)
 	cmd := &cobra.Command{
 		Use:   "bootstrap [name]",
@@ -135,16 +135,20 @@ func newLocalBootstrapCmd() *cobra.Command {
 			roots := []fluxcore.ReconcileRoot{
 				{Name: fluxcore.LocalRequirementsRootName, Path: fluxcore.DefaultLocalSourcePath},
 				{
-					Name:            fluxcore.ClusterRootName,
-					Path:            fluxcore.DefaultSourcePath,
-					DependsOn:       []string{fluxcore.LocalRequirementsRootName},
-					PropagateSource: true,
+					Name:       fluxcore.ClusterRootName,
+					Path:       fluxcore.DefaultSourcePath,
+					DependsOn:  []string{fluxcore.LocalRequirementsRootName},
+					Substitute: true,
 				},
+			}
+			vars := map[string]string{
+				fluxcore.VarBaseDomain:  baseDomain,
+				fluxcore.VarClusterName: name,
 			}
 			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), kc, fluxVersion,
 				fluxcore.SourceSpec{
 					Type: fluxcore.SourceOCI, Name: sourceName, URL: url, Revision: tag, Insecure: true,
-				}, roots)
+				}, vars, roots)
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -164,6 +168,8 @@ func newLocalBootstrapCmd() *cobra.Command {
 	f.StringVar(&artifactName, "artifact-name", localcore.DefaultArtifactName, "OCI artifact name (matches `push`).")
 	f.StringVarP(&tag, "tag", "t", localcore.DefaultArtifactTag, "OCI tag to track.")
 	f.StringVar(&sourceName, "source-name", fluxcore.DefaultSourceName, "Name of the Flux OCIRepository the roots pull from.")
+	f.StringVar(&baseDomain, "base-domain", "", "Cluster ingress FQDN (${base_domain} in cluster-vars). Required; for local, a wildcard-DNS value like 127.0.0.1.nip.io resolves to localhost.")
+	_ = cmd.MarkFlagRequired("base-domain")
 	return cmd
 }
 
