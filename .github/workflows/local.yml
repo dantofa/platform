@@ -1,7 +1,10 @@
 ---
 name: local
+# Temporarily manual-only while we provision larger runners: the 3-node kind
+# cluster plus Kyverno starves SeaweedFS on the default runner, failing the
+# Velero backup. Restore `pull_request` once bigger runners are available.
 on:
-  pull_request:
+  workflow_dispatch:
 permissions: {}
 env:
   FORCE_COLOR: ""

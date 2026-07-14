@@ -89,7 +89,19 @@ verify-backup:
   echo "Backup $backup phase: $phase"
   if [ "$phase" != "Completed" ]; then
     velero backup describe "$backup" --namespace "$ns" --details || true
+    # `velero backup logs` streams from object storage, which a CI runner can't
+    # reach; the velero server pod logs carry the same backup errors and are
+    # always reachable, so dump them for the actual failure reason.
+    kubectl -n "$ns" logs deploy/velero --tail=200 || true
     velero backup logs "$backup" --namespace "$ns" || true
+    # Capacity signals: node pressure, pod restarts/placement, last-terminated
+    # reasons (OOMKilled), and recent Warning events (evictions, scheduling).
+    echo "--- nodes ---"; kubectl get nodes -o wide || true
+    echo "--- $ns pods ---"; kubectl -n "$ns" get pods -o wide || true
+    echo "--- last terminated reasons ($ns) ---"
+    kubectl -n "$ns" get pods -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.status.containerStatuses[*].lastState.terminated.reason}{"\n"}{end}' || true
+    echo "--- recent Warning events ---"
+    kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -30 || true
     exit 1
   fi
 
