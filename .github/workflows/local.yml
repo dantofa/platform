@@ -1,12 +1,17 @@
 ---
 name: local
+# Temporarily manual-only while we provision larger runners: the 3-node kind
+# cluster plus Kyverno starves SeaweedFS on the default runner, failing the
+# Velero backup. Restore `pull_request` once bigger runners are available.
 on:
-  pull_request:
+  workflow_dispatch:
 permissions: {}
 env:
   FORCE_COLOR: ""
   NO_COLOR: "1"
   KUBECONFIG: .kubeconfig
+  CONTROL: "1" # kind control-plane nodes
+  WORKERS: "2" # kind worker nodes
 jobs:
   local:
     runs-on: ubuntu-latest
@@ -33,15 +38,15 @@ jobs:
           purge-primary-key: never
 
       - name: Create local cluster
-        run: nix run .#default -- local cluster create
+        run: nix run .#default -- local cluster create --control-planes "$CONTROL" --workers "$WORKERS"
 
       - name: Verify provisioning
         run: |
           nix run .#default -- local cluster list | grep -q '"local"'
           nix run .#default -- local cluster connect
           nix develop --command kubectl wait --for=condition=Ready nodes --all --timeout=180s
-          count=$(nix develop --command kubectl get nodes -o name | wc -l)
-          test "$count" -eq 4
+            count=$(nix develop --command kubectl get nodes -o name | wc -l)
+          test "$count" -eq "$((CONTROL + WORKERS))"
           curl -fsS http://localhost:5001/v2/ > /dev/null
 
       # bootstrap is self-contained: it publishes the flux/ tree, installs Flux,
@@ -49,6 +54,11 @@ jobs:
       # iterating on edits afterwards).
       - name: Bootstrap the backup stack
         run: nix run .#default -- local cluster bootstrap
+
+      # Gate on the whole GitOps tree reconciling (generous timeout for cold
+      # image pulls) before checking the backup itself.
+      - name: Verify Kustomizations reconciled
+        run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
 
       - name: Verify Velero backup
         run: nix develop --command just verify-backup

@@ -21,10 +21,12 @@ const (
 	kindNetwork           = "kind"
 )
 
-// kindConfig renders the cluster config: one control-plane plus `workers` worker
-// nodes. containerdConfigPatches enables the per-registry config directory so the
-// mirror hosts.toml the recipe drops on each node is honoured.
-func kindConfig(workers int) string {
+// kindConfig renders the cluster config: `controlPlanes` control-plane plus
+// `workers` worker nodes (kind adds a load balancer node automatically when
+// there is more than one control-plane). containerdConfigPatches enables the
+// per-registry config directory so the mirror hosts.toml the recipe drops on
+// each node is honoured.
+func kindConfig(controlPlanes, workers int) string {
 	var b strings.Builder
 	b.WriteString(`kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -33,8 +35,10 @@ containerdConfigPatches:
     [plugins."io.containerd.grpc.v1.cri".registry]
       config_path = "/etc/containerd/certs.d"
 nodes:
-  - role: control-plane
 `)
+	for range controlPlanes {
+		b.WriteString("  - role: control-plane\n")
+	}
 	for range workers {
 		b.WriteString("  - role: worker\n")
 	}
@@ -216,11 +220,11 @@ func (c *KindClient) Delete(ctx context.Context, name string) error {
 
 // Create provisions a kind cluster wired to an internal OCI registry (the
 // canonical kind local-registry recipe).
-func (c *KindClient) Create(ctx context.Context, name, registryName string, registryPort, workers int) error {
+func (c *KindClient) Create(ctx context.Context, name, registryName string, registryPort, controlPlanes, workers int) error {
 	if err := c.ensureRegistry(ctx, registryName, registryPort); err != nil {
 		return err
 	}
-	if _, err := runWithProgress(ctx, []string{"kind", "create", "cluster", "--name", name, "--config", "-"}, kindConfig(workers), c.progress); err != nil {
+	if _, err := runWithProgress(ctx, []string{"kind", "create", "cluster", "--name", name, "--config", "-"}, kindConfig(controlPlanes, workers), c.progress); err != nil {
 		return err
 	}
 	if err := c.configureNodes(ctx, name, registryName, registryPort); err != nil {

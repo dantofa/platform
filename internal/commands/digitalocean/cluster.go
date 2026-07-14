@@ -194,9 +194,10 @@ func newClusterDeleteCmd(token *string) *cobra.Command {
 
 func newClusterBootstrapCmd(token *string) *cobra.Command {
 	var (
-		bucket, region, fluxVersion              string
-		sourceURL, sourceBranch, sourcePath, src string
-		namespace, secretName, configMapName     string
+		bucket, region, fluxVersion           string
+		sourceType, sourceURL, sourceRevision string
+		sourcePath, src                       string
+		namespace, secretName, configMapName  string
 	)
 	cmd := &cobra.Command{
 		Use:   "bootstrap <cluster>",
@@ -242,18 +243,39 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 				return err // withSpaces already rendered
 			}
 
-			// 2. Install Flux and register the platform source + kustomization.
-			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), fluxVersion,
-				fluxcore.SourceSpec{Name: src, URL: sourceURL, Branch: sourceBranch}, sourcePath)
+			// 2. Install Flux, register the platform source (oci by default, git for
+			// downstream), and apply the shared `cluster` reconcile root. The root
+			// propagates the source into the source-agnostic ./flux/cluster stacks.
+			st := fluxcore.SourceType(sourceType)
+			if st != fluxcore.SourceOCI && st != fluxcore.SourceGit {
+				return render.Fail(fmt.Errorf("--source-type must be %q or %q, got %q",
+					fluxcore.SourceOCI, fluxcore.SourceGit, sourceType))
+			}
+			if sourceRevision == "" {
+				sourceRevision = st.DefaultRevision()
+			}
+			if sourceURL == "" {
+				sourceURL = fluxcore.DefaultSourceURL
+				if st == fluxcore.SourceOCI {
+					sourceURL = fluxcore.DefaultOCISourceURL
+				}
+			}
+			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), kc, fluxVersion,
+				fluxcore.SourceSpec{Type: st, Name: src, URL: sourceURL, Revision: sourceRevision},
+				[]fluxcore.ReconcileRoot{{
+					Name: fluxcore.ClusterRootName, Path: sourcePath, PropagateSource: true,
+				}})
 			if err != nil {
 				return render.Fail(err)
 			}
 
-			return render.JSON(map[string]string{
-				"cluster":     cluster,
-				"bucket":      bucket,
-				"flux_source": res.Source,
-				"flux_path":   res.Path,
+			return render.JSON(map[string]any{
+				"cluster":        cluster,
+				"bucket":         bucket,
+				"flux_source":    res.Source,
+				"source_kind":    res.SourceKind,
+				"revision":       res.Revision,
+				"kustomizations": res.Kustomizations,
 			})
 		},
 	}
@@ -261,10 +283,11 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 	f.StringVar(&bucket, "bucket", "", "Backup bucket name (default <cluster>-backup).")
 	f.StringVar(&region, "region", "", "Spaces region (defaults to $DIGITALOCEAN_SPACES_REGION / nyc3).")
 	f.StringVar(&fluxVersion, "flux-version", "", "Flux version to install (default: the bundled flux CLI's version).")
-	f.StringVar(&sourceURL, "source-url", fluxcore.DefaultSourceURL, "Git URL of the GitOps source.")
-	f.StringVar(&sourceBranch, "source-branch", fluxcore.DefaultSourceBranch, "Branch of the GitOps source.")
+	f.StringVar(&sourceType, "source-type", string(fluxcore.DefaultSourceType), `GitOps source type: "oci" or "git".`)
+	f.StringVar(&sourceURL, "source-url", "", "URL of the GitOps source (default: the OCI/git URL for --source-type).")
+	f.StringVar(&sourceRevision, "source-revision", "", `Source revision to track (default: "latest" for oci, "master" for git).`)
 	f.StringVar(&sourcePath, "source-path", fluxcore.DefaultSourcePath, "Path within the source that Flux reconciles.")
-	f.StringVar(&src, "source-name", fluxcore.DefaultSourceName, "Name of the Flux source and kustomization.")
+	f.StringVar(&src, "source-name", fluxcore.DefaultSourceName, "Name of the Flux source and reconcile root.")
 	f.StringVar(&namespace, "namespace", "velero", "Namespace for the credential Secret and coordinates ConfigMap (where Velero runs); created if absent.")
 	f.StringVar(&secretName, "secret-name", "", "Credential Secret name (default "+doclient.DefaultSecretName+").")
 	f.StringVar(&configMapName, "configmap-name", "", "Coordinates ConfigMap name (default "+doclient.DefaultConfigMapName+").")

@@ -1,15 +1,16 @@
 ---
-# The local/kind reconcile root, reconciled by the `platform` Kustomization that
-# `dctl local cluster bootstrap` registers (OCIRepository, path ./flux/local).
-# Brings up an in-cluster SeaweedFS S3 backend (the local stand-in for a cloud
-# bucket) and reuses the shared Velero stack under ./flux/cluster/velero. The
-# velero namespace is created imperatively by `dctl local cluster bootstrap`.
-# Nested Flux Kustomizations, ordered via dependsOn: seaweedfs-operator ->
-# seaweedfs-cluster (backend) and backup -> velero (backup contract before Velero
-# installs).
+# The local-only requirements root, reconciled by the `local-requirements`
+# reconcile root that `dctl local cluster bootstrap` applies (OCIRepository, path
+# ./flux/local). Brings up an in-cluster SeaweedFS S3 backend (the local stand-in
+# for a cloud bucket) and the backup contract it exposes; the shared Velero +
+# Kyverno stacks live in ./flux/cluster and are loaded by the separate `cluster`
+# root, which waits on this one so the backup target exists first. flux/local is
+# never reconciled from git, so its nested Kustomizations hardcode OCIRepository
+# rather than the ${source_kind} the shared tree uses. The velero namespace is
+# created imperatively by `dctl local cluster bootstrap`. Nested Kustomizations
+# are ordered via dependsOn: seaweedfs-operator -> seaweedfs-cluster (backend).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - seaweedfs
   - backup.yaml
-  - velero.yaml

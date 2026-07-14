@@ -15,7 +15,7 @@ type fakeLocalAPI struct {
 }
 
 func (f *fakeLocalAPI) List(context.Context) ([]string, error) { return f.clusters, nil }
-func (f *fakeLocalAPI) Create(_ context.Context, name, _ string, _, _ int) error {
+func (f *fakeLocalAPI) Create(_ context.Context, name, _ string, _, _, _ int) error {
 	f.created = name
 	return nil
 }
@@ -58,7 +58,7 @@ func TestListClustersEmptyIsNonNil(t *testing.T) {
 
 func TestCreateClusterExists(t *testing.T) {
 	f := &fakeLocalAPI{clusters: []string{"local"}}
-	_, err := CreateCluster(context.Background(), f, "local", "reg", 5001, 3)
+	_, err := CreateCluster(context.Background(), f, "local", "reg", 5001, 1, 3)
 	var ex *LocalClusterExistsError
 	if !errors.As(err, &ex) {
 		t.Fatalf("expected LocalClusterExistsError, got %v", err)
@@ -67,7 +67,7 @@ func TestCreateClusterExists(t *testing.T) {
 
 func TestCreateClusterEndpoints(t *testing.T) {
 	f := &fakeLocalAPI{}
-	res, err := CreateCluster(context.Background(), f, "local", "kind-registry", 5001, 3)
+	res, err := CreateCluster(context.Background(), f, "local", "kind-registry", 5001, 1, 3)
 	if err != nil {
 		t.Fatal(err)
 	}

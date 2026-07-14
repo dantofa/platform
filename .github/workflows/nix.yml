@@ -36,16 +36,16 @@ jobs:
       - name: Flake check
         run: nix flake check --no-update-lock-file --print-build-logs
 
-      # The version is stamped into the binary from the flake source (commit date +
-      # short rev) via `-ldflags -X …/internal/version.Version`. If that injection
-      # ever breaks, the build falls back to the bare "dev" default. Assert the
-      # version is actually stamped so `dctl --version` keeps naming the commit it
-      # was built from.
+      # The version is stamped into the binary from the flake source (a CalVer
+      # date + short rev) via `-ldflags -X …/internal/version.Version`. If that
+      # injection ever breaks, the build falls back to the bare "dev" default.
+      # Assert the version is actually stamped so `dctl --version` keeps naming
+      # the commit it was built from.
       - name: Verify version is stamped
         run: |
           version="$(nix run .#default -- --version)"
           echo "dctl --version -> $version"
           case "$version" in
-            0.0.0.dev*+g*) echo "version stamped from flake source" ;;
-            *) echo "::error::version not stamped (got '$version', expected 0.0.0.dev<date>+g<rev>)"; exit 1 ;;
+            *.*.*+g*) echo "version stamped from flake source" ;;
+            *) echo "::error::version not stamped (got '$version', expected <YYYY.MM.DD>+g<rev>)"; exit 1 ;;
           esac

@@ -5,15 +5,29 @@ test *args:
   go test ./... {{args}}
 
 # Build the dctl binary into dist/, stamping the source-derived version the same
-# way the flake does (0.0.0.dev<date>+g<rev>) so a local build reports it too.
+# way the flake does (<YYYY.MM.DD>+g<rev>, with -dirty on an unclean tree) so a
+# local build reports it too.
 build:
   #!/usr/bin/env bash
   set -euo pipefail
-  version="0.0.0.dev$(git show -s --format=%cd --date=format:'%Y%m%d' HEAD)+g$(git rev-parse --short HEAD)"
+  version="$(git show -s --format=%cd --date=format:'%Y.%m.%d' HEAD)+g$(git rev-parse --short HEAD)"
+  if [ -n "$(git status --porcelain)" ]; then version="$version-dirty"; fi
   # CGO_ENABLED=0 matches the flake package: a static binary with no libc link,
   # so dist/dctl behaves identically to the shipped artifact. Go's build cache
   # makes this incremental (unlike the hermetic `nix build`).
   CGO_ENABLED=0 go build -ldflags "-s -w -X github.com/dantofa/platform/internal/version.Version=$version" -o dist/dctl ./cmd/dctl
+
+# Publish the flux/ GitOps tree as an OCI artifact to a registry (CI publishes it
+# to ghcr.io on merge to master; `dctl {do} cluster bootstrap` pulls it by
+# default). Mirrors `dctl local cluster push` but targets an external registry,
+# whitelisting flux/ so the artifact's paths match the cluster flow. url carries
+# the tag (oci://host/repo:tag); revision annotates the source commit. Pass
+# registry creds via OCI_CREDS=user:token; without it flux uses the ambient
+# keychain.
+publish url revision:
+  flux push artifact "{{url}}" --path . \
+    --source "https://github.com/dantofa/platform" --revision "{{revision}}" \
+    --ignore-paths "/*,!/flux/" ${OCI_CREDS:+--creds $OCI_CREDS}
 
 shellcheck:
   #!/usr/bin/env bash
@@ -75,7 +89,19 @@ verify-backup:
   echo "Backup $backup phase: $phase"
   if [ "$phase" != "Completed" ]; then
     velero backup describe "$backup" --namespace "$ns" --details || true
+    # `velero backup logs` streams from object storage, which a CI runner can't
+    # reach; the velero server pod logs carry the same backup errors and are
+    # always reachable, so dump them for the actual failure reason.
+    kubectl -n "$ns" logs deploy/velero --tail=200 || true
     velero backup logs "$backup" --namespace "$ns" || true
+    # Capacity signals: node pressure, pod restarts/placement, last-terminated
+    # reasons (OOMKilled), and recent Warning events (evictions, scheduling).
+    echo "--- nodes ---"; kubectl get nodes -o wide || true
+    echo "--- $ns pods ---"; kubectl -n "$ns" get pods -o wide || true
+    echo "--- last terminated reasons ($ns) ---"
+    kubectl -n "$ns" get pods -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.status.containerStatuses[*].lastState.terminated.reason}{"\n"}{end}' || true
+    echo "--- recent Warning events ---"
+    kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -30 || true
     exit 1
   fi
 
@@ -87,12 +113,29 @@ verify-backup:
 # flake's `vendorHash` must be recomputed (set it to lib.fakeHash, `nix build`,
 # copy the reported hash) — that applies to Renovate's gomod PRs too. Run this
 # deliberately — freshness is a manual operation, never a merge gate.
-update:
+update: && vendor-hash
   #!/usr/bin/env bash
   set -euo pipefail
   go get -u ./...
   go mod tidy
   nix flake update
+
+# Recompute the flake vendorHash for the current go.sum: blank it to fakeHash so
+# `nix build` reports the real hash, write that back, and confirm the package
+# builds. Run by `just update`; also run standalone on a Renovate gomod PR, which
+# changes go.sum but cannot recompute the hash itself.
+vendor-hash:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  fake="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  sed -i "s|vendorHash = \"sha256-[^\"]*\";|vendorHash = \"$fake\";|" flake.nix
+  got="$(nix build .#default 2>&1 | sed -n 's|.*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\).*|\1|p' | head -1 || true)"
+  if [ -z "$got" ]; then
+    echo "error: could not determine vendorHash from nix build output" >&2
+    exit 1
+  fi
+  sed -i "s|vendorHash = \"sha256-[^\"]*\";|vendorHash = \"$got\";|" flake.nix
+  nix build ".#default" >/dev/null
 
 sast:
   #!/usr/bin/env bash

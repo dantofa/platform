@@ -76,17 +76,18 @@ const backupNamespace = "velero"
 func newLocalBootstrapCmd() *cobra.Command {
 	var (
 		fluxVersion, registryName, artifactName, tag string
-		sourceName, sourcePath                       string
+		sourceName                                   string
 	)
 	cmd := &cobra.Command{
 		Use:   "bootstrap [name]",
 		Short: "Publish the local GitOps tree, install Flux, and wire it up.",
 		Long: "Self-contained bring-up: publish the working-tree flux/ to the " +
-			"in-cluster registry, install Flux, and point an OCIRepository + " +
-			"Kustomization at ./flux/local so it reconciles immediately. Run once " +
-			"after `create` (no separate `push` needed first); use `push` afterwards " +
-			"to publish edits. The local tree stands up an in-cluster SeaweedFS " +
-			"backup target so the Velero stack runs without a cloud provider.",
+			"in-cluster registry, install Flux, and apply two OCI reconcile roots: " +
+			"`local-requirements` (./flux/local, the in-cluster SeaweedFS backup " +
+			"target) and `cluster` (./flux/cluster, the shared Velero + Kyverno " +
+			"stacks), the latter ordered after the former. Run once after `create` " +
+			"(no separate `push` needed first); use `push` afterwards to publish " +
+			"edits.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -127,18 +128,33 @@ func newLocalBootstrapCmd() *cobra.Command {
 			if err != nil {
 				return render.Fail(err)
 			}
-			res, err := fluxcore.BootstrapLocal(ctx, fluxclient.New(kubePath),
-				fluxVersion, sourceName, url, tag, sourcePath)
+			// Local always pulls OCI. flux/local is local-only so it hardcodes its
+			// source; only the shared flux/cluster root propagates the source into
+			// its portable stacks. cluster waits on local-requirements so the
+			// backup target exists before Velero substitutes it.
+			roots := []fluxcore.ReconcileRoot{
+				{Name: fluxcore.LocalRequirementsRootName, Path: fluxcore.DefaultLocalSourcePath},
+				{
+					Name:            fluxcore.ClusterRootName,
+					Path:            fluxcore.DefaultSourcePath,
+					DependsOn:       []string{fluxcore.LocalRequirementsRootName},
+					PropagateSource: true,
+				},
+			}
+			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), kc, fluxVersion,
+				fluxcore.SourceSpec{
+					Type: fluxcore.SourceOCI, Name: sourceName, URL: url, Revision: tag, Insecure: true,
+				}, roots)
 			if err != nil {
 				return render.Fail(err)
 			}
-			return render.JSON(map[string]string{
-				"cluster":     name,
-				"artifact":    pushed.Artifact,
-				"flux_source": res.Source,
-				"oci_url":     res.URL,
-				"tag":         res.Tag,
-				"flux_path":   res.Path,
+			return render.JSON(map[string]any{
+				"cluster":        name,
+				"artifact":       pushed.Artifact,
+				"flux_source":    res.Source,
+				"oci_url":        res.URL,
+				"revision":       res.Revision,
+				"kustomizations": res.Kustomizations,
 			})
 		},
 	}
@@ -147,8 +163,7 @@ func newLocalBootstrapCmd() *cobra.Command {
 	f.StringVar(&registryName, "registry-name", localcore.DefaultRegistryName, "In-cluster OCI registry name the OCIRepository pulls from.")
 	f.StringVar(&artifactName, "artifact-name", localcore.DefaultArtifactName, "OCI artifact name (matches `push`).")
 	f.StringVarP(&tag, "tag", "t", localcore.DefaultArtifactTag, "OCI tag to track.")
-	f.StringVar(&sourceName, "source-name", fluxcore.DefaultSourceName, "Name of the Flux OCIRepository and Kustomization.")
-	f.StringVar(&sourcePath, "source-path", fluxcore.DefaultLocalSourcePath, "Path within the artifact that Flux reconciles.")
+	f.StringVar(&sourceName, "source-name", fluxcore.DefaultSourceName, "Name of the Flux OCIRepository the roots pull from.")
 	return cmd
 }
 
@@ -169,10 +184,10 @@ func newLocalListCmd() *cobra.Command {
 
 func newLocalCreateCmd() *cobra.Command {
 	var (
-		registryName string
-		registryPort int
-		workers      int
-		verbose      bool
+		registryName           string
+		registryPort           int
+		controlPlanes, workers int
+		verbose                bool
 	)
 	cmd := &cobra.Command{
 		Use:   "create [name]",
@@ -181,7 +196,7 @@ func newLocalCreateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client := localclient.NewKindClient(localclient.WithProgress(verbose))
 			result, err := localcore.CreateCluster(cmd.Context(), client,
-				nameArg(args), registryName, registryPort, workers)
+				nameArg(args), registryName, registryPort, controlPlanes, workers)
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -193,6 +208,8 @@ func newLocalCreateCmd() *cobra.Command {
 		"Name of the internal OCI registry container.")
 	f.IntVar(&registryPort, "registry-port", localcore.DefaultRegistryPort,
 		"Host port the registry is pushable on.")
+	f.IntVar(&controlPlanes, "control-planes", localcore.DefaultControlPlaneNodes,
+		"Number of control-plane nodes (>1 for an HA control plane).")
 	f.IntVar(&workers, "workers", localcore.DefaultWorkerNodes,
 		"Number of worker nodes (0 for a single-node control-plane).")
 	f.BoolVar(&verbose, "verbose", false,

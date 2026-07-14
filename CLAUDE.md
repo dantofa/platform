@@ -118,12 +118,13 @@ and pre-commit pick it up automatically.
   manifests (`HelmRelease` chart versions + the Velero plugin image via the `flux`
   manager, and the SeaweedFS `Seaweed` CRD image via a `customManagers` regex).
   A Renovate gomod PR changes `go.sum`, so the flake's `vendorHash` must be
-  recomputed on it (set `lib.fakeHash`, `nix build`, copy the reported hash) —
-  Renovate cannot do that itself.
+  recomputed on it — Renovate cannot do that itself. Run **`just vendor-hash`** on
+  the PR branch (it blanks the hash, reads the one `nix build` reports, and writes
+  it back).
 - **`just update` is the manual path for what Renovate does not own**: `go get -u
   ./…` + `go mod tidy`, then `nix flake update` (the flake tracks `nixos-unstable`,
-  a rolling branch with no versions to PR, so it stays manual). Same `vendorHash`
-  caveat applies.
+  a rolling branch with no versions to PR, so it stays manual). It runs
+  `just vendor-hash` at the end, so the `vendorHash` is recomputed automatically.
 - **GitHub Actions are pinned to full commit SHAs** with a `# vX.Y.Z` version
   comment (maintained by Renovate). Declare top-level `permissions: {}` with
   minimal per-job grants, `persist-credentials: false` on checkout, and
@@ -132,16 +133,18 @@ and pre-commit pick it up automatically.
 ## Versioning & releasing
 
 The version is **derived purely from the flake source**, not git tags (a flake
-can't read tags). `flake.nix` computes `0.0.0.dev<lastModifiedDate>+g<shortRev>`
-and stamps it into the binary via `-ldflags -X …/internal/version.Version`.
-`just build` mirrors this from `git` for local builds. Do **not** add a static
-version; the rev is the identifier.
+can't read tags). `flake.nix` computes a CalVer `<YYYY.MM.DD>+g<shortRev>` (the
+commit's date + short rev; `-dirty` on an unclean tree) and stamps it into the
+binary via `-ldflags -X …/internal/version.Version`. `just build` mirrors this
+from `git` for local builds. Do **not** add a static version; the rev is the
+identifier. (Real semver is deferred to the operator phase, where container
+image tags / CRD versions force it.)
 
 - Consumers track this flake by rev (a Nix input on `master`); `nix flake update`
   locks the latest commit, and `dctl --version` names it. There is no
   version-bearing tag scheme.
-- `nix.yml` asserts `dctl --version` matches `0.0.0.dev*+g*` (guards a broken
-  version injection).
+- `nix.yml` asserts `dctl --version` matches `*.*.*+g*` (guards a broken version
+  injection — the bare "dev" fallback fails it).
 
 ## Repository configuration (as code)
 
@@ -161,5 +164,6 @@ edits, and never click the settings in the UI (the JSON wins).
 ## Before you finish
 
 Run `just lint` and `just test` (or `pre-commit run --all-files`) and make sure
-they pass. If you changed Go deps, run `go mod tidy` and recompute the flake
-`vendorHash` — CI builds the package and will fail on a stale hash.
+they pass. If you changed Go deps, run `go mod tidy` and `just vendor-hash` to
+recompute the flake `vendorHash` — CI builds the package and will fail on a stale
+hash.

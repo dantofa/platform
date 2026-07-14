@@ -23,6 +23,9 @@ const (
 	// DefaultWorkerNodes is the worker count a cluster gets unless overridden
 	// (control-plane + 3 workers = 4 nodes).
 	DefaultWorkerNodes = 3
+	// DefaultControlPlaneNodes is the control-plane count unless overridden; >1
+	// makes kind stand up an HA control plane behind a load balancer.
+	DefaultControlPlaneNodes = 1
 
 	// RegistryInClusterPort is the port the kind nodes reach the OCI registry
 	// on (the in-cluster address an OCIRepository pulls from).
@@ -44,7 +47,7 @@ func InClusterArtifactURL(ctx context.Context, client LocalClusterAPI, registryN
 // LocalClusterAPI is the local-cluster surface this package depends on.
 type LocalClusterAPI interface {
 	List(ctx context.Context) ([]string, error)
-	Create(ctx context.Context, name, registryName string, registryPort, workers int) error
+	Create(ctx context.Context, name, registryName string, registryPort, controlPlanes, workers int) error
 	Delete(ctx context.Context, name string) error
 	GetKubeconfig(ctx context.Context, name string) (string, error)
 	RegistryIP(ctx context.Context, registryName string) (string, error)
@@ -105,9 +108,9 @@ func ListClusters(ctx context.Context, client LocalClusterAPI) ([]string, error)
 	return clusters, nil
 }
 
-// CreateCluster creates a kind cluster (one control-plane + workers worker
-// nodes) wired to an internal OCI registry.
-func CreateCluster(ctx context.Context, client LocalClusterAPI, name, registryName string, registryPort, workers int) (CreateResult, error) {
+// CreateCluster creates a kind cluster (controlPlanes control-plane + workers
+// worker nodes) wired to an internal OCI registry.
+func CreateCluster(ctx context.Context, client LocalClusterAPI, name, registryName string, registryPort, controlPlanes, workers int) (CreateResult, error) {
 	existing, err := client.List(ctx)
 	if err != nil {
 		return CreateResult{}, err
@@ -115,7 +118,7 @@ func CreateCluster(ctx context.Context, client LocalClusterAPI, name, registryNa
 	if contains(existing, name) {
 		return CreateResult{}, &LocalClusterExistsError{Name: name}
 	}
-	if err := client.Create(ctx, name, registryName, registryPort, workers); err != nil {
+	if err := client.Create(ctx, name, registryName, registryPort, controlPlanes, workers); err != nil {
 		return CreateResult{}, err
 	}
 	return CreateResult{

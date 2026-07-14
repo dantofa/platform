@@ -1,6 +1,8 @@
-// Package kube is a thin client-go adapter for the cluster-side writes the
-// bootstrap/link flow needs: applying (create-or-update) Secrets and ConfigMaps,
-// and reading a Secret annotation. It carries no provider knowledge.
+// Package kube is a thin client-go adapter for the cluster-side operations the
+// CLI needs: the bootstrap/link writes (create-or-update Secrets and ConfigMaps,
+// ensure a namespace, read a Secret annotation) and reading Flux Kustomization
+// reconciliation status for the verify gate. It carries no cloud-provider
+// knowledge.
 package kube
 
 import (
@@ -9,13 +11,29 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// Client wraps a Kubernetes clientset.
+// Client wraps a Kubernetes clientset (typed writes) and a dynamic client (the
+// verify gate's uniform reads across built-ins and CRDs).
 type Client struct {
-	cs kubernetes.Interface
+	cs  kubernetes.Interface
+	dyn dynamic.Interface
+}
+
+func newClient(cfg *rest.Config) (*Client, error) {
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{cs: cs, dyn: dyn}, nil
 }
 
 // NewFromKubeconfig builds a client from raw kubeconfig bytes (e.g. one fetched
@@ -25,11 +43,7 @@ func NewFromKubeconfig(data []byte) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	cs, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return &Client{cs: cs}, nil
+	return newClient(cfg)
 }
 
 // NewFromPath builds a client from a kubeconfig path; an empty path uses the
@@ -43,11 +57,7 @@ func NewFromPath(path string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	cs, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return &Client{cs: cs}, nil
+	return newClient(cfg)
 }
 
 // EnsureNamespace creates the named Namespace if it does not already exist.
