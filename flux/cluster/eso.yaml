@@ -1,0 +1,22 @@
+---
+# The External Secrets Operator, a shared stack the `cluster` reconcile root loads
+# on every cluster type. Like its siblings the sourceRef is source-agnostic: the
+# ${source_kind}/${source_name} placeholders are filled by the root's
+# postBuild.substituteFrom the cluster-vars ConfigMap. ESO is a base dependency
+# for any stack that consumes an ExternalSecret (e.g. cloudflare-tunnel), so
+# wait is set: this Kustomization is Ready only once the operator is up, which is
+# what a downstream `dependsOn: eso` relies on.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: eso
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./flux/cluster/eso
+  prune: true
+  wait: true
+  sourceRef:
+    kind: ${source_kind}
+    name: ${source_name}
+    namespace: flux-system
