@@ -77,6 +77,7 @@ func newLocalBootstrapCmd() *cobra.Command {
 	var (
 		fluxVersion, registryName, artifactName, tag string
 		sourceName, baseDomain                       string
+		bwToken, bwProjectID, bwOrgID                string
 	)
 	cmd := &cobra.Command{
 		Use:   "bootstrap [name]",
@@ -124,6 +125,22 @@ func newLocalBootstrapCmd() *cobra.Command {
 				return render.Fail(err)
 			}
 
+			// Plant the ESO secret-zero (Bitwarden token); project/org scope the
+			// ClusterSecretStore via cluster-vars below. All default from the bws
+			// env the CI already injects.
+			if bwToken == "" {
+				bwToken = os.Getenv("BWS_ACCESS_TOKEN")
+			}
+			if bwProjectID == "" {
+				bwProjectID = os.Getenv("BWS_PROJECT_ID")
+			}
+			if bwOrgID == "" {
+				bwOrgID = os.Getenv("BWS_ORGANIZATION_ID")
+			}
+			if err := fluxcore.ProvisionESOAccessToken(ctx, kc, bwToken); err != nil {
+				return render.Fail(err)
+			}
+
 			url, err := localcore.InClusterArtifactURL(ctx, kindClient, registryName, artifactName)
 			if err != nil {
 				return render.Fail(err)
@@ -142,8 +159,10 @@ func newLocalBootstrapCmd() *cobra.Command {
 				},
 			}
 			vars := map[string]string{
-				fluxcore.VarBaseDomain:  baseDomain,
-				fluxcore.VarClusterName: name,
+				fluxcore.VarBaseDomain:         baseDomain,
+				fluxcore.VarClusterName:        name,
+				fluxcore.VarBitwardenOrgID:     bwOrgID,
+				fluxcore.VarBitwardenProjectID: bwProjectID,
 			}
 			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), kc, fluxVersion,
 				fluxcore.SourceSpec{
@@ -170,6 +189,9 @@ func newLocalBootstrapCmd() *cobra.Command {
 	f.StringVar(&sourceName, "source-name", fluxcore.DefaultSourceName, "Name of the Flux OCIRepository the roots pull from.")
 	f.StringVar(&baseDomain, "base-domain", "", "Cluster ingress FQDN (${base_domain} in cluster-vars). Required; for local, a wildcard-DNS value like 127.0.0.1.nip.io resolves to localhost.")
 	_ = cmd.MarkFlagRequired("base-domain")
+	f.StringVar(&bwToken, "bitwarden-token", "", "Bitwarden machine-account token for the ESO secret-zero (default $BWS_ACCESS_TOKEN).")
+	f.StringVar(&bwProjectID, "bitwarden-project-id", "", "Bitwarden project ID for the ClusterSecretStore (default $BWS_PROJECT_ID).")
+	f.StringVar(&bwOrgID, "bitwarden-org-id", "", "Bitwarden organization ID for the ClusterSecretStore (default $BWS_ORGANIZATION_ID).")
 	return cmd
 }
 

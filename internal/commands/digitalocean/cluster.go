@@ -3,6 +3,7 @@ package digitalocean
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -197,6 +198,7 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 		bucket, region, fluxVersion           string
 		sourceType, sourceURL, sourceRevision string
 		sourcePath, src, baseDomain           string
+		bwToken, bwProjectID, bwOrgID         string
 		namespace, secretName, configMapName  string
 	)
 	cmd := &cobra.Command{
@@ -243,7 +245,22 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 				return err // withSpaces already rendered
 			}
 
-			// 2. Install Flux, register the platform source (oci by default, git for
+			// 2. Plant the ESO secret-zero (Bitwarden token); project/org scope the
+			// ClusterSecretStore via cluster-vars below. All default from the bws env.
+			if bwToken == "" {
+				bwToken = os.Getenv("BWS_ACCESS_TOKEN")
+			}
+			if bwProjectID == "" {
+				bwProjectID = os.Getenv("BWS_PROJECT_ID")
+			}
+			if bwOrgID == "" {
+				bwOrgID = os.Getenv("BWS_ORGANIZATION_ID")
+			}
+			if err := fluxcore.ProvisionESOAccessToken(ctx, kc, bwToken); err != nil {
+				return render.Fail(err)
+			}
+
+			// 3. Install Flux, register the platform source (oci by default, git for
 			// downstream), and apply the shared `cluster` reconcile root. The root
 			// propagates the source into the source-agnostic ./flux/cluster stacks.
 			st := fluxcore.SourceType(sourceType)
@@ -261,8 +278,10 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 				}
 			}
 			vars := map[string]string{
-				fluxcore.VarBaseDomain:  baseDomain,
-				fluxcore.VarClusterName: cluster,
+				fluxcore.VarBaseDomain:         baseDomain,
+				fluxcore.VarClusterName:        cluster,
+				fluxcore.VarBitwardenOrgID:     bwOrgID,
+				fluxcore.VarBitwardenProjectID: bwProjectID,
 			}
 			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), kc, fluxVersion,
 				fluxcore.SourceSpec{Type: st, Name: src, URL: sourceURL, Revision: sourceRevision},
@@ -295,6 +314,9 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 	f.StringVar(&src, "source-name", fluxcore.DefaultSourceName, "Name of the Flux source and reconcile root.")
 	f.StringVar(&baseDomain, "base-domain", "", "Cluster ingress FQDN (${base_domain} in cluster-vars). Required.")
 	_ = cmd.MarkFlagRequired("base-domain")
+	f.StringVar(&bwToken, "bitwarden-token", "", "Bitwarden machine-account token for the ESO secret-zero (default $BWS_ACCESS_TOKEN).")
+	f.StringVar(&bwProjectID, "bitwarden-project-id", "", "Bitwarden project ID for the ClusterSecretStore (default $BWS_PROJECT_ID).")
+	f.StringVar(&bwOrgID, "bitwarden-org-id", "", "Bitwarden organization ID for the ClusterSecretStore (default $BWS_ORGANIZATION_ID).")
 	f.StringVar(&namespace, "namespace", "velero", "Namespace for the credential Secret and coordinates ConfigMap (where Velero runs); created if absent.")
 	f.StringVar(&secretName, "secret-name", "", "Credential Secret name (default "+doclient.DefaultSecretName+").")
 	f.StringVar(&configMapName, "configmap-name", "", "Coordinates ConfigMap name (default "+doclient.DefaultConfigMapName+").")

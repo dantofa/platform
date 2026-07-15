@@ -1,0 +1,10 @@
+---
+# A self-signed cluster issuer for internal TLS (e.g. the ESO
+# bitwarden-sdk-server's serving cert). Not for public/ingress certs — the
+# Cloudflare tunnel terminates edge TLS.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned
+spec:
+  selfSigned: {}

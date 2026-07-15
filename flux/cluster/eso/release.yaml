@@ -34,3 +34,8 @@ spec:
       limits:
         cpu: 200m
         memory: 256Mi
+    # The Bitwarden Secrets Manager provider needs this sidecar server. Its TLS is
+    # on by default and reads the `bitwarden-tls-certs` secret (see
+    # certificate.yaml, issued by cert-manager's self-signed ClusterIssuer).
+    bitwarden-sdk-server:
+      enabled: true

@@ -1,0 +1,28 @@
+---
+# The ESO ClusterSecretStore, a separate stack from the eso install: its CRD
+# (external-secrets.io/ClusterSecretStore) is created by the ESO release, so
+# applying it in the same stack fails the dry-run ("no matches for kind") and
+# aborts the whole apply — including the release — deadlocking the install.
+# dependsOn eso breaks that. substituteFrom cluster-vars fills the store's
+# ${bitwarden_org_id}/${bitwarden_project_id} (dctl writes them from
+# $BWS_ORGANIZATION_ID/$BWS_PROJECT_ID). Source-agnostic like its siblings.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: eso-config
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./flux/cluster/eso-config
+  prune: true
+  wait: true
+  dependsOn:
+    - name: eso
+  sourceRef:
+    kind: ${source_kind}
+    name: ${source_name}
+    namespace: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars

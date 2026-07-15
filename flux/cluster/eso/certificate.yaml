@@ -1,0 +1,21 @@
+---
+# Serving cert for the bitwarden-sdk-server (ESO's Bitwarden provider talks to it
+# over TLS). Issued by cert-manager's self-signed ClusterIssuer into the
+# `bitwarden-tls-certs` secret the sidecar mounts; the ClusterSecretStore trusts
+# it via caProvider (the secret's ca.crt). cert-manager must be up first, which
+# the eso Kustomization's `dependsOn: cert-manager` guarantees.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bitwarden-tls-certs
+  namespace: external-secrets-system
+spec:
+  secretName: bitwarden-tls-certs
+  duration: 8760h # 1y
+  renewBefore: 720h # 30d
+  issuerRef:
+    name: selfsigned
+    kind: ClusterIssuer
+  dnsNames:
+    - bitwarden-sdk-server.external-secrets-system.svc.cluster.local
+    - bitwarden-sdk-server.external-secrets-system.svc

@@ -48,14 +48,24 @@ const (
 	// to per-cluster values. It is the single source of cluster-scoped variables.
 	ClusterVarsName = "cluster-vars"
 	// Cluster-vars keys. SourceKind/SourceName let the shared stacks bind their
-	// sourceRef; BaseDomain/ClusterName are the cluster's ingress FQDN and name.
-	VarSourceKind  = "source_kind"
-	VarSourceName  = "source_name"
-	VarBaseDomain  = "base_domain"
-	VarClusterName = "cluster_name"
+	// sourceRef; BaseDomain/ClusterName are the cluster's ingress FQDN and name;
+	// BitwardenOrgID/ProjectID scope the ESO ClusterSecretStore to a bws project.
+	VarSourceKind         = "source_kind"
+	VarSourceName         = "source_name"
+	VarBaseDomain         = "base_domain"
+	VarClusterName        = "cluster_name"
+	VarBitwardenOrgID     = "bitwarden_org_id"
+	VarBitwardenProjectID = "bitwarden_project_id"
 
 	// clusterVarsNamespace is where the ConfigMap and reconcile roots live.
 	clusterVarsNamespace = "flux-system"
+
+	// ESONamespace is where the External Secrets Operator and its secret-zero
+	// live; BitwardenTokenSecret/Key is the machine-account token the
+	// ClusterSecretStore authenticates to Bitwarden Secrets Manager with.
+	ESONamespace         = "external-secrets-system"
+	BitwardenTokenSecret = "bitwarden-access-token"
+	BitwardenTokenKey    = "token"
 )
 
 // SourceType selects which Flux source kind a cluster is bootstrapped against.
@@ -130,6 +140,28 @@ type ReconcileRoot struct {
 type Applier interface {
 	ApplyConfigMap(ctx context.Context, namespace, name string, data map[string]string) error
 	ApplyReconcileRoot(ctx context.Context, root ReconcileRoot) error
+}
+
+// SecretApplier plants a bootstrap secret (ensure a namespace, create-or-update a
+// Secret). Satisfied by the kube adapter.
+type SecretApplier interface {
+	EnsureNamespace(ctx context.Context, name string) error
+	ApplySecret(ctx context.Context, namespace, name string, data map[string][]byte, annotations map[string]string) error
+}
+
+// ProvisionESOAccessToken plants secret-zero: the Bitwarden machine-account token
+// the ESO ClusterSecretStore authenticates with. Idempotent; a no-op when token
+// is empty (bitwarden not configured for this cluster, so the store stays
+// unauthenticated and its ExternalSecrets will not sync).
+func ProvisionESOAccessToken(ctx context.Context, a SecretApplier, token string) error {
+	if token == "" {
+		return nil
+	}
+	if err := a.EnsureNamespace(ctx, ESONamespace); err != nil {
+		return err
+	}
+	return a.ApplySecret(ctx, ESONamespace, BitwardenTokenSecret,
+		map[string][]byte{BitwardenTokenKey: []byte(token)}, nil)
 }
 
 // SourceSpec describes a Flux source to register: its Type (oci/git) selects the
