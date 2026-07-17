@@ -157,6 +157,24 @@ func newLocalBootstrapCmd() *cobra.Command {
 					DependsOn:  []string{fluxcore.LocalRequirementsRootName},
 					Substitute: true,
 				},
+				// Ingress layer, after ESO: the Cloudflare Tunnel controller pulls
+				// its cloudflare-api secret from bws via the bitwarden store, so it
+				// waits on eso-config (a cross-layer dependency).
+				{
+					Name:       fluxcore.IngressRootName,
+					Path:       fluxcore.DefaultLocalIngressPath,
+					DependsOn:  []string{fluxcore.ESOConfigName},
+					Substitute: true,
+				},
+				// Echo test backend, deployed on kind by default. After the ingress
+				// layer so its default IngressClass exists and echo.${base_domain}
+				// is routable.
+				{
+					Name:       fluxcore.EchoRootName,
+					Path:       fluxcore.DefaultEchoPath,
+					DependsOn:  []string{fluxcore.IngressRootName},
+					Substitute: true,
+				},
 			}
 			vars := map[string]string{
 				fluxcore.VarBaseDomain:         baseDomain,

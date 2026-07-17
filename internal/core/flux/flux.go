@@ -38,8 +38,23 @@ const (
 	// ClusterRootName is the reconcile root that loads the shared ./flux/cluster
 	// stacks on every cluster type. LocalRequirementsRootName loads the
 	// local-only ./flux/local requirements ahead of it on kind clusters.
+	// IngressRootName loads a per-cluster-type ingress layer after the cluster
+	// root (so ESO exists), e.g. ./flux/ingress/tunnel on kind.
 	ClusterRootName           = "cluster"
 	LocalRequirementsRootName = "local-requirements"
+	IngressRootName           = "ingress"
+	// DefaultLocalIngressPath is kind's ingress layer: the Cloudflare Tunnel
+	// controller (outbound, no LoadBalancer). DOKS uses a different path.
+	DefaultLocalIngressPath = "./flux/ingress/tunnel"
+	// EchoRootName / DefaultEchoPath deploy the echo test backend. kind clusters
+	// get it by default (after the ingress layer, so it is routable); it is
+	// reusable on any cluster type via ./flux/echo.
+	EchoRootName    = "echo"
+	DefaultEchoPath = "./flux/echo"
+	// ESOConfigName is the nested Kustomization holding the bitwarden
+	// ClusterSecretStore; the ingress layer dependsOn it (cross-layer) so its
+	// ExternalSecrets can sync.
+	ESOConfigName = "eso-config"
 
 	// ClusterVarsName is the flux-system ConfigMap dctl writes at bootstrap with
 	// this cluster's identity. Substituting reconcile roots pull it via

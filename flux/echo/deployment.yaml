@@ -1,0 +1,44 @@
+---
+# A request-echo test backend (mendhak/http-https-echo): it reflects the method,
+# headers, and body, so hitting it through the ingress confirms the whole path
+# (edge -> ingress controller -> Service -> pod) and surfaces the forwarded
+# headers (CF-Connecting-IP, X-Forwarded-For, CF-Ray). TRUST_PROXY=true trusts the
+# in-cluster ingress proxy (cloudflared on the tunnel; nginx elsewhere), so the
+# reported client IP reflects the forwarded chain rather than the proxy pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: echo
+  labels:
+    app: echo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo
+  template:
+    metadata:
+      labels:
+        app: echo
+    spec:
+      containers:
+        - name: echo
+          # Exact pin; bumped by Renovate.
+          image: mendhak/http-https-echo:41
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HTTP_PORT
+              value: "8080"
+            - name: TRUST_PROXY
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
