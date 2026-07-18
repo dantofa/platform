@@ -286,9 +286,25 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), kc, fluxVersion,
 				fluxcore.SourceSpec{Type: st, Name: src, URL: sourceURL, Revision: sourceRevision},
 				vars,
-				[]fluxcore.ReconcileRoot{{
-					Name: fluxcore.ClusterRootName, Path: sourcePath, Substitute: true,
-				}})
+				[]fluxcore.ReconcileRoot{
+					{Name: fluxcore.ClusterRootName, Path: sourcePath, Substitute: true},
+					// Ingress controller (Traefik) and DNS management (external-dns)
+					// are separate stacks. Both are after ESO — their ExternalSecrets
+					// pull the Origin CA cert / Cloudflare token from bws via the
+					// bitwarden store, so they wait on eso-config.
+					{
+						Name:       fluxcore.IngressRootName,
+						Path:       fluxcore.DefaultRemoteIngressPath,
+						DependsOn:  []string{fluxcore.ESOConfigName},
+						Substitute: true,
+					},
+					{
+						Name:       fluxcore.ExternalDNSRootName,
+						Path:       fluxcore.DefaultExternalDNSPath,
+						DependsOn:  []string{fluxcore.ESOConfigName},
+						Substitute: true,
+					},
+				})
 			if err != nil {
 				return render.Fail(err)
 			}

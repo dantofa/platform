@@ -44,8 +44,17 @@ const (
 	LocalRequirementsRootName = "local-requirements"
 	IngressRootName           = "ingress"
 	// DefaultLocalIngressPath is kind's ingress layer: the Cloudflare Tunnel
-	// controller (outbound, no LoadBalancer). DOKS uses a different path.
-	DefaultLocalIngressPath = "./flux/ingress/tunnel"
+	// controller (outbound, no LoadBalancer). DefaultRemoteIngressPath is the
+	// DOKS layer: Traefik + external-dns behind a DO LoadBalancer, proxied by
+	// Cloudflare. Both set their controller as the default IngressClass, so the
+	// same vanilla Ingress objects route on either.
+	DefaultLocalIngressPath  = "./flux/ingress/tunnel"
+	DefaultRemoteIngressPath = "./flux/ingress/traefik"
+	// ExternalDNSRootName / DefaultExternalDNSPath is the DOKS DNS layer:
+	// external-dns (Cloudflare). It is its own stack (controller-agnostic) and
+	// DOKS-only — on kind the tunnel controller owns DNS.
+	ExternalDNSRootName    = "external-dns"
+	DefaultExternalDNSPath = "./flux/ingress/external-dns"
 	// EchoRootName / DefaultEchoPath deploy the echo test backend. kind clusters
 	// get it by default (after the ingress layer, so it is routable); it is
 	// reusable on any cluster type via ./flux/echo.
