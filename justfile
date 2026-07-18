@@ -105,6 +105,52 @@ verify-backup:
     exit 1
   fi
 
+# Snapshot cluster + Flux state into ./preview-diagnostics for CI to upload as
+# artifacts on a failed preview run (the cluster is destroyed afterwards, so
+# this is the only surviving record). Everything is best-effort: a partial
+# capture from a half-provisioned or unreachable cluster is still worth keeping,
+# so this recipe never fails the run. Reads KUBECONFIG (falls back to
+# ./.kubeconfig).
+capture-diagnostics:
+  #!/usr/bin/env bash
+  set -uo pipefail
+  out=preview-diagnostics
+  mkdir -p "$out"
+  export KUBECONFIG="${KUBECONFIG:-.kubeconfig}"
+  if [ ! -s "$KUBECONFIG" ] || ! kubectl cluster-info >"$out/cluster-info.txt" 2>&1; then
+    echo "cluster API unreachable via '$KUBECONFIG' (never provisioned or still coming up); in-cluster state not captured" \
+      | tee "$out/README.txt"
+    exit 0
+  fi
+  # Flux reconciliation state + failure reasons.
+  flux get all -A >"$out/flux-get-all.txt" 2>&1 || true
+  kubectl get kustomizations,helmreleases,helmrepositories,gitrepositories,ocirepositories \
+    -A -o wide >"$out/flux-resources.txt" 2>&1 || true
+  kubectl describe kustomizations,helmreleases -A >"$out/flux-describe.txt" 2>&1 || true
+  # Secrets plumbing (ESO / cert-manager) - a common bootstrap failure point.
+  kubectl get externalsecrets,clustersecretstores,clusterissuers,certificates \
+    -A -o wide >"$out/secrets-resources.txt" 2>&1 || true
+  kubectl describe externalsecrets,clustersecretstores -A >"$out/secrets-describe.txt" 2>&1 || true
+  # Workloads, scheduling, events.
+  kubectl get pods -A -o wide >"$out/pods.txt" 2>&1 || true
+  kubectl get nodes -o wide >"$out/nodes.txt" 2>&1 || true
+  kubectl get events -A --sort-by=.lastTimestamp >"$out/events.txt" 2>&1 || true
+  # Logs (current + previous container) for every pod not settled Running/Completed.
+  kubectl get pods -A --no-headers 2>/dev/null \
+    | awk '$4!="Running" && $4!="Completed"{print $1" "$2}' \
+    | while read -r ns pod; do
+        kubectl -n "$ns" logs "$pod" --all-containers --tail=200 \
+          >"$out/logs_${ns}_${pod}.txt" 2>&1 || true
+        kubectl -n "$ns" logs "$pod" --all-containers --previous --tail=200 \
+          >"$out/logs_${ns}_${pod}_previous.txt" 2>&1 || true
+      done
+  # Flux reconciler logs (carry the reconcile errors themselves).
+  for c in source-controller kustomize-controller helm-controller; do
+    kubectl -n flux-system logs "deploy/$c" --tail=300 \
+      >"$out/logs_flux-system_${c}.txt" 2>&1 || true
+  done
+  echo "diagnostics captured to $out/"
+
 # Manual refresh of the pins Renovate does not own: Go modules and the Nix flake
 # inputs (the flake tracks nixos-unstable, a rolling branch with no versions to
 # PR, so it stays manual). GitHub Actions, Go modules, and the Flux manifest

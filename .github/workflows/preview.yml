@@ -97,8 +97,34 @@ jobs:
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
           nix run .#default -- digitalocean space unlink "$CLUSTER_NAME-backup" || true
 
+      # On failure, snapshot DO-side + in-cluster state before the teardown below
+      # destroys the cluster, so the failure can still be diagnosed afterwards.
+      - name: Capture failure diagnostics
+        if: failure()
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          KUBECONFIG: .kubeconfig
+        run: |
+          mkdir -p preview-diagnostics
+          nix develop --command bws run --project-id ${{ vars.BWS_PROJECT_ID }} -- \
+            nix run .#default -- digitalocean cluster list \
+            >preview-diagnostics/digitalocean-clusters.txt 2>&1 || true
+          nix develop --command just capture-diagnostics || true
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preview-diagnostics-${{ github.event.pull_request.number }}
+          path: preview-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # always(), not success(): a failed run still provisions a billable cluster,
+      # so it must be torn down regardless (diagnostics are captured above first).
+      # `cluster delete` is idempotent, so a no-op if create never got that far.
       - name: Destroy preview cluster
-        if: success()
+        if: always()
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
