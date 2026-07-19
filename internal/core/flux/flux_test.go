@@ -295,3 +295,27 @@ func TestBootstrapStopsOnInstallFailure(t *testing.T) {
 		t.Fatalf("expected only the install attempt, got %v", e.events)
 	}
 }
+
+func TestValidateBitwardenConfig(t *testing.T) {
+	cases := []struct {
+		name                    string
+		token, projectID, orgID string
+		wantErr                 bool
+	}{
+		{"fully configured", "tok", "proj", "org", false},
+		{"not configured at all", "", "", "", false},
+		{"token only", "tok", "", "", false},
+		{"project without token", "", "proj", "", true},
+		{"org without token", "", "", "org", true},
+		{"project and org without token", "", "proj", "org", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateBitwardenConfig(tc.token, tc.projectID, tc.orgID)
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("ValidateBitwardenConfig(%q,%q,%q) err=%v, wantErr=%v",
+					tc.token, tc.projectID, tc.orgID, err, tc.wantErr)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ package flux
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -171,6 +172,22 @@ type Applier interface {
 type SecretApplier interface {
 	EnsureNamespace(ctx context.Context, name string) error
 	ApplySecret(ctx context.Context, namespace, name string, data map[string][]byte, annotations map[string]string) error
+}
+
+// ValidateBitwardenConfig guards against a half-configured Bitwarden setup. When
+// a ClusterSecretStore is being scoped (a project or organization ID is given)
+// but the machine-account token is missing, ESO can never authenticate, secret-
+// zero is skipped, and every stack behind eso-config hangs until Flux times out
+// minutes later. Fail fast at bootstrap with an actionable message instead. An
+// entirely empty trio is allowed (bitwarden simply not configured for the
+// cluster), matching ProvisionESOAccessToken's no-op-on-empty contract.
+func ValidateBitwardenConfig(token, projectID, orgID string) error {
+	if token != "" || (projectID == "" && orgID == "") {
+		return nil
+	}
+	return errors.New("bitwarden project/organization configured but no access token: " +
+		"set --bitwarden-token or $BWS_ACCESS_TOKEN (note: `bws run` strips " +
+		"BWS_ACCESS_TOKEN from the child environment, so pass it explicitly)")
 }
 
 // ProvisionESOAccessToken plants secret-zero: the Bitwarden machine-account token

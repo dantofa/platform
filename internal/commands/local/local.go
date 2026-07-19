@@ -137,6 +137,9 @@ func newLocalBootstrapCmd() *cobra.Command {
 			if bwOrgID == "" {
 				bwOrgID = os.Getenv("BWS_ORGANIZATION_ID")
 			}
+			if err := fluxcore.ValidateBitwardenConfig(bwToken, bwProjectID, bwOrgID); err != nil {
+				return render.Fail(err)
+			}
 			if err := fluxcore.ProvisionESOAccessToken(ctx, kc, bwToken); err != nil {
 				return render.Fail(err)
 			}
