@@ -4,8 +4,12 @@
 # it reads any Ingress' status and creates a proxied record (orange cloud)
 # pointing at the LoadBalancer address — so it is its own stack, not part of
 # Traefik's. DOKS-only: on kind the tunnel owns DNS. txtOwnerId is per-cluster
-# (${cluster_name}) so clusters sharing the zone don't fight over records. The
-# Cloudflare token comes from the cloudflare-api secret (ESO); Zone.DNS:Edit only.
+# (${cluster_name}) so clusters sharing the zone don't fight over records.
+# domainFilters is the cluster's own ${base_domain} (not the zone apex), so each
+# cluster manages only its subtree and multiple domains (dantofa.dev preview vs
+# dantofa.com production) work from the same manifest — external-dns still finds
+# the parent Cloudflare zone by suffix match. The Cloudflare token comes from the
+# cloudflare-api secret (ESO); Zone.DNS:Edit + Zone:Read.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -29,7 +33,7 @@ spec:
     sources:
       - ingress
     domainFilters:
-      - dantofa.dev
+      - ${base_domain}
     policy: sync
     txtOwnerId: ${cluster_name}
     extraArgs:

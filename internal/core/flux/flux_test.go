@@ -296,6 +296,26 @@ func TestBootstrapStopsOnInstallFailure(t *testing.T) {
 	}
 }
 
+func TestValidateTLSIssuer(t *testing.T) {
+	cases := []struct {
+		issuer  string
+		wantErr bool
+	}{
+		{"selfsigned", false},
+		{"letsencrypt", false},
+		{"", true},
+		{"self-signed", true},
+		{"letsencrypt-staging", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.issuer, func(t *testing.T) {
+			if err := ValidateTLSIssuer(tc.issuer); tc.wantErr != (err != nil) {
+				t.Fatalf("ValidateTLSIssuer(%q) err=%v, wantErr=%v", tc.issuer, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateBitwardenConfig(t *testing.T) {
 	cases := []struct {
 		name                    string

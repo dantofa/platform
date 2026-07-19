@@ -81,6 +81,7 @@ jobs:
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
           nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME"
           --source-type git --source-revision "$HEAD_REF" --base-domain preview.dantofa.dev
+          --tls-issuer selfsigned
           --bitwarden-token "$BWS_ACCESS_TOKEN"
 
       # Gate on the whole GitOps tree reconciling (generous timeout for cold

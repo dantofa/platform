@@ -8,6 +8,7 @@ package flux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -56,6 +57,12 @@ const (
 	// DOKS-only — on kind the tunnel controller owns DNS.
 	ExternalDNSRootName    = "external-dns"
 	DefaultExternalDNSPath = "./flux/ingress/external-dns"
+	// LetsEncryptRootName / DefaultLetsEncryptPath is the ACME (Let's Encrypt)
+	// issuer layer: the letsencrypt ClusterIssuer + its Cloudflare DNS-01 token.
+	// DOKS-only and deployed only when --tls-issuer=letsencrypt (production);
+	// preview clusters use the always-present selfsigned issuer instead.
+	LetsEncryptRootName    = "letsencrypt"
+	DefaultLetsEncryptPath = "./flux/ingress/letsencrypt"
 	// EchoRootName / DefaultEchoPath deploy the echo test backend. kind clusters
 	// get it by default (after the ingress layer, so it is routable); it is
 	// reusable on any cluster type via ./flux/echo.
@@ -65,6 +72,10 @@ const (
 	// ClusterSecretStore; the ingress layer dependsOn it (cross-layer) so its
 	// ExternalSecrets can sync.
 	ESOConfigName = "eso-config"
+	// CertManagerConfigName is the nested Kustomization holding the selfsigned
+	// ClusterIssuer; the Traefik ingress layer dependsOn it (cross-layer) so the
+	// Certificate CRD is established and the selfsigned issuer exists.
+	CertManagerConfigName = "cert-manager-config"
 
 	// ClusterVarsName is the flux-system ConfigMap dctl writes at bootstrap with
 	// this cluster's identity. Substituting reconcile roots pull it via
@@ -81,6 +92,9 @@ const (
 	VarClusterName        = "cluster_name"
 	VarBitwardenOrgID     = "bitwarden_org_id"
 	VarBitwardenProjectID = "bitwarden_project_id"
+	// VarTLSIssuer is the cert-manager ClusterIssuer name the DOKS Traefik default
+	// certificate is issued by: TLSIssuerSelfSigned or TLSIssuerLetsEncrypt.
+	VarTLSIssuer = "tls_issuer"
 
 	// clusterVarsNamespace is where the ConfigMap and reconcile roots live.
 	clusterVarsNamespace = "flux-system"
@@ -172,6 +186,29 @@ type Applier interface {
 type SecretApplier interface {
 	EnsureNamespace(ctx context.Context, name string) error
 	ApplySecret(ctx context.Context, namespace, name string, data map[string][]byte, annotations map[string]string) error
+}
+
+// TLS issuer names — the cert-manager ClusterIssuer the Traefik default cert is
+// issued by, selected per cluster at bootstrap (--tls-issuer). SelfSigned pairs
+// with Cloudflare Full (preview: no rate limits, no external dep); LetsEncrypt
+// pairs with Full (strict) (production: a publicly-trusted cert via DNS-01).
+const (
+	TLSIssuerSelfSigned  = "selfsigned"
+	TLSIssuerLetsEncrypt = "letsencrypt"
+)
+
+// ValidateTLSIssuer rejects an unknown --tls-issuer value. The name is also the
+// ClusterIssuer name substituted into the Traefik Certificate, so it must match
+// an issuer the cluster deploys (selfsigned is always present; letsencrypt is
+// added only for that value).
+func ValidateTLSIssuer(issuer string) error {
+	switch issuer {
+	case TLSIssuerSelfSigned, TLSIssuerLetsEncrypt:
+		return nil
+	default:
+		return fmt.Errorf("--tls-issuer must be %q or %q, got %q",
+			TLSIssuerSelfSigned, TLSIssuerLetsEncrypt, issuer)
+	}
 }
 
 // ValidateBitwardenConfig guards against a half-configured Bitwarden setup. When

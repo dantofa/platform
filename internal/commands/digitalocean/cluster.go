@@ -200,6 +200,7 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 		sourcePath, src, baseDomain           string
 		bwToken, bwProjectID, bwOrgID         string
 		namespace, secretName, configMapName  string
+		tlsIssuer                             string
 	)
 	cmd := &cobra.Command{
 		Use:   "bootstrap <cluster>",
@@ -259,6 +260,9 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 			if err := fluxcore.ValidateBitwardenConfig(bwToken, bwProjectID, bwOrgID); err != nil {
 				return render.Fail(err)
 			}
+			if err := fluxcore.ValidateTLSIssuer(tlsIssuer); err != nil {
+				return render.Fail(err)
+			}
 			if err := fluxcore.ProvisionESOAccessToken(ctx, kc, bwToken); err != nil {
 				return render.Fail(err)
 			}
@@ -285,29 +289,44 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 				fluxcore.VarClusterName:        cluster,
 				fluxcore.VarBitwardenOrgID:     bwOrgID,
 				fluxcore.VarBitwardenProjectID: bwProjectID,
+				fluxcore.VarTLSIssuer:          tlsIssuer,
+			}
+			roots := []fluxcore.ReconcileRoot{
+				{Name: fluxcore.ClusterRootName, Path: sourcePath, Substitute: true},
+				// Traefik (ingress) and external-dns (DNS) are separate stacks.
+				// Traefik's default cert is issued by cert-manager (Certificate in
+				// certificate.yaml, ${tls_issuer} ClusterIssuer), so it waits on
+				// cert-manager-config (Certificate CRD + the selfsigned issuer);
+				// external-dns pulls its Cloudflare token from bws, so it waits on
+				// eso-config.
+				{
+					Name:       fluxcore.IngressRootName,
+					Path:       fluxcore.DefaultRemoteIngressPath,
+					DependsOn:  []string{fluxcore.CertManagerConfigName},
+					Substitute: true,
+				},
+				{
+					Name:       fluxcore.ExternalDNSRootName,
+					Path:       fluxcore.DefaultExternalDNSPath,
+					DependsOn:  []string{fluxcore.ESOConfigName},
+					Substitute: true,
+				},
+			}
+			// The letsencrypt ACME issuer (+ its Cloudflare DNS-01 token) is only
+			// needed when the Traefik cert is issued by it. It needs the
+			// ClusterIssuer CRD (cert-manager) and the bitwarden store for the
+			// token ExternalSecret (eso-config); the Traefik Certificate resolves
+			// against it asynchronously once it is Ready.
+			if tlsIssuer == fluxcore.TLSIssuerLetsEncrypt {
+				roots = append(roots, fluxcore.ReconcileRoot{
+					Name:      fluxcore.LetsEncryptRootName,
+					Path:      fluxcore.DefaultLetsEncryptPath,
+					DependsOn: []string{fluxcore.CertManagerConfigName, fluxcore.ESOConfigName},
+				})
 			}
 			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), kc, fluxVersion,
 				fluxcore.SourceSpec{Type: st, Name: src, URL: sourceURL, Revision: sourceRevision},
-				vars,
-				[]fluxcore.ReconcileRoot{
-					{Name: fluxcore.ClusterRootName, Path: sourcePath, Substitute: true},
-					// Ingress controller (Traefik) and DNS management (external-dns)
-					// are separate stacks. Both are after ESO — their ExternalSecrets
-					// pull the Origin CA cert / Cloudflare token from bws via the
-					// bitwarden store, so they wait on eso-config.
-					{
-						Name:       fluxcore.IngressRootName,
-						Path:       fluxcore.DefaultRemoteIngressPath,
-						DependsOn:  []string{fluxcore.ESOConfigName},
-						Substitute: true,
-					},
-					{
-						Name:       fluxcore.ExternalDNSRootName,
-						Path:       fluxcore.DefaultExternalDNSPath,
-						DependsOn:  []string{fluxcore.ESOConfigName},
-						Substitute: true,
-					},
-				})
+				vars, roots)
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -333,6 +352,8 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 	f.StringVar(&src, "source-name", fluxcore.DefaultSourceName, "Name of the Flux source and reconcile root.")
 	f.StringVar(&baseDomain, "base-domain", "", "Cluster ingress FQDN (${base_domain} in cluster-vars). Required.")
 	_ = cmd.MarkFlagRequired("base-domain")
+	f.StringVar(&tlsIssuer, "tls-issuer", fluxcore.TLSIssuerSelfSigned,
+		`cert-manager ClusterIssuer for the Traefik default cert: "selfsigned" (Cloudflare Full) or "letsencrypt" (Full strict, DNS-01).`)
 	f.StringVar(&bwToken, "bitwarden-token", "", "Bitwarden machine-account token for the ESO secret-zero (default $BWS_ACCESS_TOKEN).")
 	f.StringVar(&bwProjectID, "bitwarden-project-id", "", "Bitwarden project ID for the ClusterSecretStore (default $BWS_PROJECT_ID).")
 	f.StringVar(&bwOrgID, "bitwarden-org-id", "", "Bitwarden organization ID for the ClusterSecretStore (default $BWS_ORGANIZATION_ID).")

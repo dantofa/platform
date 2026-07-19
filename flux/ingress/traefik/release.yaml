@@ -4,8 +4,9 @@
 # vanilla Ingress objects route on both cluster types. Exposed via a DO
 # LoadBalancer; Cloudflare proxies it (Full strict), so:
 #   - websecure (443) is the default entrypoint with entrypoint-level TLS, and
-#     tlsStore.default serves the Cloudflare Origin CA wildcard cert
-#     (traefik-default-tls, from ESO) — so portable Ingresses need no `tls:` block;
+#     tlsStore.default serves the cert-manager-issued default cert
+#     (traefik-default-tls, see certificate.yaml) — so portable Ingresses need no
+#     `tls:` block;
 #   - web (80) permanently redirects to websecure;
 #   - publishedService lets external-dns read the LB address off Ingress status.
 apiVersion: helm.toolkit.fluxcd.io/v2
