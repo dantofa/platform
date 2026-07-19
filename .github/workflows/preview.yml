@@ -72,11 +72,16 @@ jobs:
           # dctl plants secret-zero + scopes the ClusterSecretStore from these.
           BWS_PROJECT_ID: ${{ vars.BWS_PROJECT_ID }}
           BWS_ORGANIZATION_ID: ${{ vars.BWS_ORGANIZATION_ID }}
+        # `bws run` strips BWS_ACCESS_TOKEN from the child env (it is bws's own
+        # auth credential), so dctl's $BWS_ACCESS_TOKEN default would be empty and
+        # secret-zero silently skipped. Pass it explicitly on the flag, expanded
+        # by the outer shell from the step env before bws run consumes it.
         run: >-
           nix develop --command
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
           nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME"
           --source-type git --source-revision "$HEAD_REF" --base-domain preview.dantofa.dev
+          --bitwarden-token "$BWS_ACCESS_TOKEN"
 
       # Gate on the whole GitOps tree reconciling (generous timeout for cold
       # image pulls) before checking the backup itself.
