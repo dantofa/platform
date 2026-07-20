@@ -13,8 +13,8 @@
 
 ## Platform
 
-- Add Trivy deployment manifests
-- Add CloudNativePG deployment manifests (Zitadel requirement)
+- [DONE] Add Trivy deployment manifests
+- [DONE] Add CloudNativePG deployment manifests (Zitadel requirement)
 - Add Grafana deployment manifests (optional)
 - Add Zitadel deployment manifests (optional)
 

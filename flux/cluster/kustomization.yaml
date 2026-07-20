@@ -14,3 +14,4 @@ resources:
   - eso-config.yaml
   - velero.yaml
   - kyverno.yaml
+  - trivy.yaml
