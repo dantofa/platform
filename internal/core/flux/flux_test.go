@@ -307,6 +307,25 @@ func TestBootstrapStopsOnInstallFailure(t *testing.T) {
 	}
 }
 
+func TestDNSZone(t *testing.T) {
+	cases := []struct{ base, want string }{
+		{"preview.dantofa.dev", "dantofa.dev"},
+		{"dantofa.com", "dantofa.com"},
+		{"local.dantofa.dev", "dantofa.dev"},
+		{"a.b.dantofa.com", "dantofa.com"},
+		{"dantofa.dev.", "dantofa.dev"}, // trailing dot tolerated
+	}
+	for _, tc := range cases {
+		t.Run(tc.base, func(t *testing.T) {
+			got, err := DNSZone(tc.base)
+			if err != nil {
+				t.Fatalf("DNSZone(%q): %v", tc.base, err)
+			}
+			eq(t, got, tc.want)
+		})
+	}
+}
+
 func TestValidateTLSIssuer(t *testing.T) {
 	cases := []struct {
 		issuer  string

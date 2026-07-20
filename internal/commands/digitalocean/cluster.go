@@ -2,19 +2,35 @@ package digitalocean
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	cfclient "github.com/dantofa/platform/internal/clients/cloudflare"
 	doclient "github.com/dantofa/platform/internal/clients/digitalocean"
 	fluxclient "github.com/dantofa/platform/internal/clients/flux"
 	"github.com/dantofa/platform/internal/clients/kube"
 	docore "github.com/dantofa/platform/internal/core/digitalocean"
 	fluxcore "github.com/dantofa/platform/internal/core/flux"
+	teardowncore "github.com/dantofa/platform/internal/core/teardown"
 	"github.com/dantofa/platform/internal/render"
 )
+
+// Teardown drain bounds: how long to wait for the ingress controller to remove
+// the Cloudflare records after the Ingresses are deleted, and the poll cadence.
+const (
+	teardownTimeout  = 3 * time.Minute
+	teardownInterval = 5 * time.Second
+)
+
+// newDNSClient adapts the cloudflare client constructor to the teardown factory
+// signature (concrete -> interface).
+func newDNSClient(token string) (teardowncore.DNSAPI, error) {
+	return cfclient.New(token)
+}
 
 func newClusterCmd() *cobra.Command {
 	var token string
@@ -176,21 +192,69 @@ func newClusterConnectCmd(token *string) *cobra.Command {
 }
 
 func newClusterDeleteCmd(token *string) *cobra.Command {
-	return &cobra.Command{
+	var force, noTeardown bool
+	cmd := &cobra.Command{
 		Use:   "delete <name>",
 		Short: "Delete a cluster by name. Idempotent: succeeds if already absent.",
-		Args:  cobra.ExactArgs(1),
+		Long: "Delete a cluster by name. First gracefully tears down its ingress " +
+			"(deletes the Ingress objects so external-dns / the tunnel controller " +
+			"remove the Cloudflare records, then waits for the records to clear) so " +
+			"the destroyed cluster does not orphan DNS records. --no-teardown skips " +
+			"this; --force deletes anyway if teardown fails.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cluster := args[0]
+			ctx := cmd.Context()
 			client, err := doclient.NewClusterClient(*token)
 			if err != nil {
 				return render.Fail(err)
 			}
-			if _, err := docore.DeleteCluster(cmd.Context(), client, args[0]); err != nil {
+			if !noTeardown {
+				if err := teardownCluster(ctx, cluster, *token, force); err != nil {
+					return err // already rendered
+				}
+			}
+			if _, err := docore.DeleteCluster(ctx, client, cluster); err != nil {
 				return render.Fail(err)
 			}
 			return nil
 		},
 	}
+	f := cmd.Flags()
+	f.BoolVar(&force, "force", false, "Delete even if graceful ingress teardown fails (may orphan DNS records).")
+	f.BoolVar(&noTeardown, "no-teardown", false, "Skip graceful ingress teardown and destroy immediately.")
+	return cmd
+}
+
+// teardownCluster runs the graceful ingress/DNS drain before a DOKS cluster is
+// destroyed. A cluster that no longer exists is a no-op (delete is idempotent).
+// On a teardown failure it renders the error and returns it, unless force is set
+// (then it warns and lets the delete proceed).
+func teardownCluster(ctx context.Context, cluster, token string, force bool) error {
+	kc, err := kubeClient(ctx, cluster, "", token)
+	if err != nil {
+		var notFound *docore.ClusterNotFoundError
+		if errors.As(err, &notFound) {
+			return nil // nothing to tear down
+		}
+		return teardownFailed(fmt.Errorf("connecting to cluster for teardown: %w", err), force)
+	}
+	res, err := teardowncore.Run(ctx, kc, kc, newDNSClient, teardownTimeout, teardownInterval)
+	if err != nil {
+		return teardownFailed(err, force)
+	}
+	return render.JSON(map[string]any{"teardown": res})
+}
+
+// teardownFailed renders a teardown error and returns it to abort the delete —
+// unless force is set, in which case it warns and returns nil so delete proceeds.
+func teardownFailed(err error, force bool) error {
+	if force {
+		fmt.Fprintln(os.Stderr, "warning: ingress teardown failed, deleting anyway (--force):", err)
+		return nil
+	}
+	render.Error(err)
+	return render.ErrHandled
 }
 
 func newClusterBootstrapCmd(token *string) *cobra.Command {
@@ -284,12 +348,17 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 					sourceURL = fluxcore.DefaultOCISourceURL
 				}
 			}
+			dnsZone, err := fluxcore.DNSZone(baseDomain)
+			if err != nil {
+				return render.Fail(err)
+			}
 			vars := map[string]string{
 				fluxcore.VarBaseDomain:         baseDomain,
 				fluxcore.VarClusterName:        cluster,
 				fluxcore.VarBitwardenOrgID:     bwOrgID,
 				fluxcore.VarBitwardenProjectID: bwProjectID,
 				fluxcore.VarTLSIssuer:          tlsIssuer,
+				fluxcore.VarDNSZone:            dnsZone,
 			}
 			roots := []fluxcore.ReconcileRoot{
 				{Name: fluxcore.ClusterRootName, Path: sourcePath, Substitute: true},

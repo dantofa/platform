@@ -149,6 +149,16 @@ capture-diagnostics:
     kubectl -n flux-system logs "deploy/$c" --tail=300 \
       >"$out/logs_flux-system_${c}.txt" 2>&1 || true
   done
+  # Ingress + DNS path: the Ingress status carries the LoadBalancer address
+  # external-dns reads, and external-dns' own log says whether it found the zone
+  # and created/updated the record (a Running pod, so not covered by the loop
+  # above). The cloudflare-tunnel controller is the local-cluster equivalent.
+  kubectl get ingress -A -o wide >"$out/ingresses.txt" 2>&1 || true
+  kubectl describe ingress -A >"$out/ingress-describe.txt" 2>&1 || true
+  kubectl -n external-dns logs deploy/external-dns --tail=400 \
+    >"$out/logs_external-dns.txt" 2>&1 || true
+  kubectl -n tunnel logs deploy/cloudflare-tunnel-ingress-controller --tail=400 \
+    >"$out/logs_tunnel-controller.txt" 2>&1 || true
   echo "diagnostics captured to $out/"
 
 # Manual refresh of the pins Renovate does not own: Go modules and the Nix flake

@@ -3,17 +3,34 @@
 package local
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	cfclient "github.com/dantofa/platform/internal/clients/cloudflare"
 	fluxclient "github.com/dantofa/platform/internal/clients/flux"
 	"github.com/dantofa/platform/internal/clients/kube"
 	localclient "github.com/dantofa/platform/internal/clients/local"
 	fluxcore "github.com/dantofa/platform/internal/core/flux"
 	localcore "github.com/dantofa/platform/internal/core/local"
+	teardowncore "github.com/dantofa/platform/internal/core/teardown"
 	"github.com/dantofa/platform/internal/render"
 )
+
+// Teardown drain bounds (see the DOKS delete command): wait for the tunnel
+// controller to remove the Cloudflare records after the Ingresses are deleted.
+const (
+	teardownTimeout  = 3 * time.Minute
+	teardownInterval = 5 * time.Second
+)
+
+func newDNSClient(token string) (teardowncore.DNSAPI, error) {
+	return cfclient.New(token)
+}
 
 // NewCmd builds the `local` resource group. The Nix package bundles the
 // runtime CLIs (kind/flux/docker) on PATH, so the group is always present; a
@@ -179,11 +196,16 @@ func newLocalBootstrapCmd() *cobra.Command {
 					Substitute: true,
 				},
 			}
+			dnsZone, err := fluxcore.DNSZone(baseDomain)
+			if err != nil {
+				return render.Fail(err)
+			}
 			vars := map[string]string{
 				fluxcore.VarBaseDomain:         baseDomain,
 				fluxcore.VarClusterName:        name,
 				fluxcore.VarBitwardenOrgID:     bwOrgID,
 				fluxcore.VarBitwardenProjectID: bwProjectID,
+				fluxcore.VarDNSZone:            dnsZone,
 			}
 			res, err := fluxcore.Bootstrap(ctx, fluxclient.New(kubePath), kc, fluxVersion,
 				fluxcore.SourceSpec{
@@ -293,17 +315,65 @@ func newLocalPushCmd() *cobra.Command {
 }
 
 func newLocalDeleteCmd() *cobra.Command {
-	return &cobra.Command{
+	var force, noTeardown bool
+	cmd := &cobra.Command{
 		Use:   "delete [name]",
 		Short: "Delete a local cluster. Idempotent: succeeds if already absent.",
-		Args:  cobra.MaximumNArgs(1),
+		Long: "Delete a local cluster. First gracefully tears down its ingress so the " +
+			"tunnel controller removes the Cloudflare records (and they are not " +
+			"orphaned once the cluster is gone). --no-teardown skips this; --force " +
+			"deletes anyway if teardown fails.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := localcore.DeleteCluster(cmd.Context(), localclient.NewKindClient(), nameArg(args)); err != nil {
+			ctx := cmd.Context()
+			name := nameArg(args)
+			if !noTeardown {
+				if err := teardownCluster(ctx, name, force); err != nil {
+					return err // already rendered
+				}
+			}
+			if _, err := localcore.DeleteCluster(ctx, localclient.NewKindClient(), name); err != nil {
 				return render.Fail(err)
 			}
 			return nil
 		},
 	}
+	f := cmd.Flags()
+	f.BoolVar(&force, "force", false, "Delete even if graceful ingress teardown fails (may orphan DNS records).")
+	f.BoolVar(&noTeardown, "no-teardown", false, "Skip graceful ingress teardown and destroy immediately.")
+	return cmd
+}
+
+// teardownCluster runs the graceful ingress/DNS drain before a local cluster is
+// destroyed. A cluster that no longer exists is a no-op. On failure it renders
+// the error and returns it unless force is set (then it warns and proceeds).
+func teardownCluster(ctx context.Context, name string, force bool) error {
+	kubeconfig, err := localcore.GetKubeconfig(ctx, localclient.NewKindClient(), name)
+	if err != nil {
+		var notFound *localcore.LocalClusterNotFoundError
+		if errors.As(err, &notFound) {
+			return nil // nothing to tear down
+		}
+		return teardownFailed(fmt.Errorf("reading kubeconfig for teardown: %w", err), force)
+	}
+	kc, err := kube.NewFromKubeconfig([]byte(kubeconfig))
+	if err != nil {
+		return teardownFailed(fmt.Errorf("connecting to cluster for teardown: %w", err), force)
+	}
+	res, err := teardowncore.Run(ctx, kc, kc, newDNSClient, teardownTimeout, teardownInterval)
+	if err != nil {
+		return teardownFailed(err, force)
+	}
+	return render.JSON(map[string]any{"teardown": res})
+}
+
+func teardownFailed(err error, force bool) error {
+	if force {
+		fmt.Fprintln(os.Stderr, "warning: ingress teardown failed, deleting anyway (--force):", err)
+		return nil
+	}
+	render.Error(err)
+	return render.ErrHandled
 }
 
 func newLocalConnectCmd() *cobra.Command {

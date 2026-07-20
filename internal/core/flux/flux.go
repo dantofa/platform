@@ -9,7 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // Defaults for the platform GitOps source a cluster is bootstrapped against.
@@ -95,6 +98,10 @@ const (
 	// VarTLSIssuer is the cert-manager ClusterIssuer name the DOKS Traefik default
 	// certificate is issued by: TLSIssuerSelfSigned or TLSIssuerLetsEncrypt.
 	VarTLSIssuer = "tls_issuer"
+	// VarDNSZone is the cluster's Cloudflare zone apex (eTLD+1 of base_domain),
+	// e.g. dantofa.dev. external-dns filters zones by their apex, so it must be
+	// the registrable domain, not base_domain (a subdomain would exclude the zone).
+	VarDNSZone = "dns_zone"
 
 	// clusterVarsNamespace is where the ConfigMap and reconcile roots live.
 	clusterVarsNamespace = "flux-system"
@@ -195,6 +202,19 @@ const (
 	TLSIssuerSelfSigned  = "selfsigned"
 	TLSIssuerLetsEncrypt = "letsencrypt"
 )
+
+// DNSZone returns the registrable domain (eTLD+1) of an ingress base_domain,
+// e.g. "preview.dantofa.dev" -> "dantofa.dev", "dantofa.com" -> "dantofa.com".
+// This is the cluster's Cloudflare zone apex: external-dns filters zones by apex
+// (a subdomain filter excludes the parent zone), so it is derived from the one
+// base_domain input rather than configured separately.
+func DNSZone(baseDomain string) (string, error) {
+	zone, err := publicsuffix.EffectiveTLDPlusOne(strings.TrimSuffix(baseDomain, "."))
+	if err != nil {
+		return "", fmt.Errorf("deriving DNS zone from base domain %q: %w", baseDomain, err)
+	}
+	return zone, nil
+}
 
 // ValidateTLSIssuer rejects an unknown --tls-issuer value. The name is also the
 // ClusterIssuer name substituted into the Traefik Certificate, so it must match
