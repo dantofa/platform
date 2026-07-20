@@ -63,17 +63,26 @@ func ResolveCloudflareToken(ctx context.Context, r ClusterReader) (string, error
 }
 
 // ResolveZone returns the cluster's Cloudflare zone apex from the cluster-vars
-// ConfigMap (the dns_zone bootstrap derived from base_domain).
+// ConfigMap (the dns_zone bootstrap derived from base_domain). Falls back to
+// deriving it from base_domain when dns_zone is absent — so a cluster
+// bootstrapped before dns_zone was written can still be torn down.
 func ResolveZone(ctx context.Context, r ClusterReader) (string, error) {
 	zone, err := r.ConfigMapValue(ctx, clusterVarsNamespace, fluxcore.ClusterVarsName, fluxcore.VarDNSZone)
 	if err != nil {
 		return "", err
 	}
-	if zone == "" {
-		return "", fmt.Errorf("no %s in the %s ConfigMap; cannot determine the DNS zone to drain",
-			fluxcore.VarDNSZone, fluxcore.ClusterVarsName)
+	if zone != "" {
+		return zone, nil
 	}
-	return zone, nil
+	base, err := r.ConfigMapValue(ctx, clusterVarsNamespace, fluxcore.ClusterVarsName, fluxcore.VarBaseDomain)
+	if err != nil {
+		return "", err
+	}
+	if base == "" {
+		return "", fmt.Errorf("neither %s nor %s in the %s ConfigMap; cannot determine the DNS zone to drain",
+			fluxcore.VarDNSZone, fluxcore.VarBaseDomain, fluxcore.ClusterVarsName)
+	}
+	return fluxcore.DNSZone(base)
 }
 
 // TunnelRef identifies a Cloudflare Tunnel to reap: the account it lives in and
