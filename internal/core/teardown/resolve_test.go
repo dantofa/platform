@@ -74,6 +74,25 @@ func TestResolveZoneErrorsWhenNeitherSet(t *testing.T) {
 	}
 }
 
+func TestRunSkipsWhenIngressNotBootstrapped(t *testing.T) {
+	// A leftover / partially-created cluster: no cloudflare-api secret anywhere.
+	// Teardown must skip (not error) so the delete proceeds without --force.
+	r := &fakeReader{configMaps: zoneCM()}
+	k := &fakeKube{hosts: []string{"a.dantofa.dev"}}
+	cf := &fakeCF{}
+	res, err := Run(context.Background(), r, k, func(string) (CloudflareAPI, error) { return cf, nil },
+		50*time.Millisecond, time.Millisecond)
+	if err != nil {
+		t.Fatalf("Run should skip, not error: %v", err)
+	}
+	if !res.Skipped {
+		t.Error("expected Skipped when no cloudflare-api secret exists")
+	}
+	if k.suspendSeen || k.deleteSeen || cf.tunnelDeleted {
+		t.Error("nothing should be torn down when the ingress stack is absent")
+	}
+}
+
 func TestRunReapsTunnelWhenPresent(t *testing.T) {
 	r := &fakeReader{
 		secrets: map[string]string{
