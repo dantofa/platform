@@ -1,0 +1,53 @@
+---
+# Keep the Traefik LoadBalancer's Cloudflare IPv4 allowlist fresh. Cloudflare's
+# ranges change a few times a year; a stale list would start dropping legitimate
+# proxied traffic (removed ranges) or leave the origin open (added ranges). This
+# regenerates the list from cloudflare.com/ips-v4 weekly and opens a PR when it
+# changed, so the change is reviewed before it reaches a cluster (no in-cluster
+# drift; git stays the source of truth). Renovate cannot track an IP list, so
+# this is its own automated path.
+name: cloudflare
+on:
+  schedule:
+    - cron: "0 0 * * 1" # Mondays 00:00 UTC
+  workflow_dispatch:
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  NO_COLOR: "1"
+jobs:
+  acl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # GITHUB_TOKEN only needs to read for checkout; the PR is created by
+    # ACTIONS_TOKEN (a PAT, not GITHUB_TOKEN, so the PR triggers the required
+    # lint/test checks — GITHUB_TOKEN-authored PRs trigger no workflows and would
+    # be un-mergeable).
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Regenerate the Cloudflare IP allowlist
+        run: nix develop --command just cloudflare-acl
+
+      - name: Open a PR if the allowlist changed
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.ACTIONS_TOKEN }}
+          branch: cloudflare-acl/refresh
+          title: Refresh Cloudflare IP allowlist
+          commit-message: Refresh Cloudflare IP allowlist
+          body: >-
+            Automated refresh of the Traefik LoadBalancer's Cloudflare IPv4
+            allowlist from https://www.cloudflare.com/ips-v4. Merging updates the
+            DO LoadBalancer firewall so only current Cloudflare ranges can reach
+            the origin.
+          labels: automated
+          delete-branch: true

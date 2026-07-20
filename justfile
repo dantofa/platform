@@ -29,6 +29,23 @@ publish url revision:
     --source "https://github.com/dantofa/platform" --revision "{{revision}}" \
     --ignore-paths "/*,!/flux/" ${OCI_CREDS:+--creds $OCI_CREDS}
 
+# Regenerate the Cloudflare IPv4 allowlist in the Traefik LoadBalancer manifest
+# from cloudflare.com/ips-v4 (the source of truth for who may reach the origin
+# directly). Replaces the lines between the BEGIN/END cloudflare-ipv4 markers. Run
+# by the cloudflare-acl workflow (which opens a PR on change); also runnable by
+# hand. Idempotent: a no-op when the published list is unchanged.
+cloudflare-acl:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  file=flux/ingress/traefik/release.yaml
+  block="$(curl -fsS https://www.cloudflare.com/ips-v4 | sort -V | sed 's/^/        - /')"
+  awk -v block="$block" '
+    /# BEGIN cloudflare-ipv4/ { print; print block; skip=1; next }
+    /# END cloudflare-ipv4/   { skip=0 }
+    !skip
+  ' "$file" > "$file.tmp"
+  mv "$file.tmp" "$file"
+
 shellcheck:
   #!/usr/bin/env bash
   # Lint the shebang (script) recipes in this justfile with shellcheck. Line
