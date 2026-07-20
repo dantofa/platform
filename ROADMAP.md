@@ -19,18 +19,6 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
 
 ## Infrastructure: Cluster and GitOps
 
-- [DONE] Publish project to GitLab
-- [DONE] Set up CI/CD pipeline for automated deployments
-  - [DONE] Add support for ephemeral environments for feature branches with automated and scheduled teardown
-- [DONE] Configure GitLab project settings
-  - [DONE] Enforce code reviews via merge requests
-  - [DONE] Disable direct pushes to main branch
-  - [DONE] Enable required pipelines for merge requests
-  - [DONE] Set up branch protection rules
-  - [DONE] Configure security scanning and dependency scanning
-  - [DONE] Configure runners for CI/CD
-- [DONE] Implement auto-scaling for the Kubernetes cluster
-- [DONE] Decide on whether to use monorepo or multirepo structure for tenant applications
 - [DONE] Add Zitadel admin OIDC support for authentication using Gitlab
 - [DONE] Add testing for tenant Zitadel organizations
 - [DONE] Configure DOKS cluster backups
@@ -42,9 +30,7 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
 
 ## Infrastructure: Security
 
-- [DONE] Ensure Trivy image scanning gates the CI pipeline (scan target exists in justfile; confirm it blocks promotion on critical findings)
-- [DONE] Upgrade ESO HelmRelease from 0.9.x to 0.10.x to resolve CVE-2025-21613, CVE-2024-45337, CVE-2025-68121 and remove those entries from `.trivyignore-cluster`
-- [DONE] Implement automated rotation for Zitadel machine user PATs
+- Implement automated rotation for Zitadel machine user PATs
   - Current: PAT is created once and stored in the `auth-credentials` Secret; never rotated
   - Target: automated rotation on a configurable schedule or on PAT expiry detection via the drift timer
 - Update grpc dependency across Flux, cloudflare-tunnel-ingress-controller, and trivy-operator charts once CVE-2026-33186 patches are released; remove entry from `.trivyignore-cluster`
@@ -67,9 +53,8 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
 
 ## Infrastructure: Tenant Model
 
-- [DONE] Create Kubernetes namespaces per tenant via operator
-- [DONE] Configure ingress and routing for tenant applications
-- [DONE] Test tenant provisioning and deprovisioning process
+- Create tenant operator
+- Test tenant provisioning and deprovisioning process
 - Create the inception tenant
   - Reserved name (e.g. `inception`); provisioned before any agent is deployed to other tenants
   - Purpose: platform admins dogfood every agent before it reaches B2C/B2B tenants
@@ -213,8 +198,6 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
 
 ## Infrastructure: Future Compatibility
 
-- Add compatibility for provisioning on a BYOC (bring your own cluster) model for on-premise deployments
 - Add compatibility for provisioning on GKE and EKS
   - Abstract cloud-provider-specific steps (cluster creation, `doctl` calls) behind justfile targets with a provider parameter
   - Document provider-specific required parameters and known differences
-- Evaluate managed Kubernetes options vs. self-managed DOKS for cost and operational overhead
