@@ -5,5 +5,5 @@ metadata:
   name: kyverno
   namespace: kyverno-system
 spec:
-  interval: 24h
+  interval: 1h
   url: https://kyverno.github.io/kyverno/

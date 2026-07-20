@@ -1,0 +1,27 @@
+---
+# The External Secrets Operator install (operator + bitwarden-sdk-server + its
+# serving Certificate), a shared stack the `cluster` reconcile root loads on every
+# cluster type. Source-agnostic sourceRef (${source_kind}/${source_name} from the
+# root's substitution). The ClusterSecretStore lives in the separate eso-config
+# stack because its CRD is installed here (bundling it deadlocks the apply). ESO
+# is a base dependency for any ExternalSecret consumer; wait is set so a
+# downstream dependsOn only proceeds once the operator is up.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: eso
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./flux/cluster/eso
+  prune: true
+  wait: true
+  # The self-signed ClusterIssuer must exist first: the bitwarden-sdk-server's
+  # serving cert (bitwarden-tls-certs) is issued from it. cert-manager-config
+  # dependsOn cert-manager, so this transitively waits for the install too.
+  dependsOn:
+    - name: cert-manager-config
+  sourceRef:
+    kind: ${source_kind}
+    name: ${source_name}
+    namespace: flux-system

@@ -7,7 +7,12 @@ package flux
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // Defaults for the platform GitOps source a cluster is bootstrapped against.
@@ -28,7 +33,7 @@ const (
 	// DefaultSourcePath is the shared, source-agnostic reconcile root every
 	// cluster loads (Velero + Kyverno). Its nested Kustomizations reference the
 	// source via ${source_kind}/${source_name}, filled in by the reconcile
-	// root's postBuild.substitute.
+	// root's postBuild.substituteFrom the cluster-vars ConfigMap.
 	DefaultSourcePath = "./flux/cluster"
 	// DefaultLocalSourcePath is the local/kind-only requirements root: the
 	// SeaweedFS backend that stands in for a cloud bucket plus the backup
@@ -38,8 +43,75 @@ const (
 	// ClusterRootName is the reconcile root that loads the shared ./flux/cluster
 	// stacks on every cluster type. LocalRequirementsRootName loads the
 	// local-only ./flux/local requirements ahead of it on kind clusters.
+	// IngressRootName loads a per-cluster-type ingress layer after the cluster
+	// root (so ESO exists), e.g. ./flux/ingress/tunnel on kind.
 	ClusterRootName           = "cluster"
 	LocalRequirementsRootName = "local-requirements"
+	IngressRootName           = "ingress"
+	// DefaultLocalIngressPath is kind's ingress layer: the Cloudflare Tunnel
+	// controller (outbound, no LoadBalancer). DefaultRemoteIngressPath is the
+	// DOKS layer: Traefik + external-dns behind a DO LoadBalancer, proxied by
+	// Cloudflare. Both set their controller as the default IngressClass, so the
+	// same vanilla Ingress objects route on either.
+	DefaultLocalIngressPath  = "./flux/ingress/tunnel"
+	DefaultRemoteIngressPath = "./flux/ingress/traefik"
+	// ExternalDNSRootName / DefaultExternalDNSPath is the DOKS DNS layer:
+	// external-dns (Cloudflare). It is its own stack (controller-agnostic) and
+	// DOKS-only — on kind the tunnel controller owns DNS.
+	ExternalDNSRootName    = "external-dns"
+	DefaultExternalDNSPath = "./flux/ingress/external-dns"
+	// LetsEncryptRootName / DefaultLetsEncryptPath is the ACME (Let's Encrypt)
+	// issuer layer: the letsencrypt ClusterIssuer + its Cloudflare DNS-01 token.
+	// DOKS-only and deployed only when --tls-issuer=letsencrypt (production);
+	// preview clusters use the always-present selfsigned issuer instead.
+	LetsEncryptRootName    = "letsencrypt"
+	DefaultLetsEncryptPath = "./flux/ingress/letsencrypt"
+	// EchoRootName / DefaultEchoPath deploy the echo test backend. kind clusters
+	// get it by default (after the ingress layer, so it is routable); it is
+	// reusable on any cluster type via ./flux/echo.
+	EchoRootName    = "echo"
+	DefaultEchoPath = "./flux/echo"
+	// ESOConfigName is the nested Kustomization holding the bitwarden
+	// ClusterSecretStore; the ingress layer dependsOn it (cross-layer) so its
+	// ExternalSecrets can sync.
+	ESOConfigName = "eso-config"
+	// CertManagerConfigName is the nested Kustomization holding the selfsigned
+	// ClusterIssuer; the Traefik ingress layer dependsOn it (cross-layer) so the
+	// Certificate CRD is established and the selfsigned issuer exists.
+	CertManagerConfigName = "cert-manager-config"
+
+	// ClusterVarsName is the flux-system ConfigMap dctl writes at bootstrap with
+	// this cluster's identity. Substituting reconcile roots pull it via
+	// postBuild.substituteFrom, so the shared stacks (and downstream
+	// Kustomizations) resolve ${source_kind}/${source_name}/${base_domain}/etc.
+	// to per-cluster values. It is the single source of cluster-scoped variables.
+	ClusterVarsName = "cluster-vars"
+	// Cluster-vars keys. SourceKind/SourceName let the shared stacks bind their
+	// sourceRef; BaseDomain/ClusterName are the cluster's ingress FQDN and name;
+	// BitwardenOrgID/ProjectID scope the ESO ClusterSecretStore to a bws project.
+	VarSourceKind         = "source_kind"
+	VarSourceName         = "source_name"
+	VarBaseDomain         = "base_domain"
+	VarClusterName        = "cluster_name"
+	VarBitwardenOrgID     = "bitwarden_org_id"
+	VarBitwardenProjectID = "bitwarden_project_id"
+	// VarTLSIssuer is the cert-manager ClusterIssuer name the DOKS Traefik default
+	// certificate is issued by: TLSIssuerSelfSigned or TLSIssuerLetsEncrypt.
+	VarTLSIssuer = "tls_issuer"
+	// VarDNSZone is the cluster's Cloudflare zone apex (eTLD+1 of base_domain),
+	// e.g. dantofa.dev. external-dns filters zones by their apex, so it must be
+	// the registrable domain, not base_domain (a subdomain would exclude the zone).
+	VarDNSZone = "dns_zone"
+
+	// clusterVarsNamespace is where the ConfigMap and reconcile roots live.
+	clusterVarsNamespace = "flux-system"
+
+	// ESONamespace is where the External Secrets Operator and its secret-zero
+	// live; BitwardenTokenSecret/Key is the machine-account token the
+	// ClusterSecretStore authenticates to Bitwarden Secrets Manager with.
+	ESONamespace         = "external-secrets-system"
+	BitwardenTokenSecret = "bitwarden-access-token"
+	BitwardenTokenKey    = "token"
 )
 
 // SourceType selects which Flux source kind a cluster is bootstrapped against.
@@ -75,41 +147,118 @@ func (t SourceType) DefaultRevision() string {
 }
 
 // Engine is the flux-CLI surface this package depends on, satisfied by the
-// clients adapter. It installs Flux and registers sources; the reconcile roots
-// go through ReconcileRootApplier instead (the flux CLI can't set
-// postBuild.substitute). Create operations are create-or-update (idempotent).
+// clients adapter. It installs Flux and registers sources; the cluster-vars
+// ConfigMap and reconcile roots go through Applier instead (the flux CLI can't
+// set postBuild.substituteFrom). Create operations are create-or-update
+// (idempotent).
 type Engine interface {
 	Install(ctx context.Context, version string) error
 	CreateGitSource(ctx context.Context, name, url, branch string) error
 	DeleteGitSource(ctx context.Context, name string) error
 	CreateOCISource(ctx context.Context, name, url, tag string, insecure bool) error
 	DeleteOCISource(ctx context.Context, name string) error
-	CreateKustomization(ctx context.Context, name, sourceKind, source, path string) error
 	DeleteKustomization(ctx context.Context, name string) error
 }
 
 // ReconcileRoot is a top-level Flux Kustomization dctl applies as a CR during
-// bootstrap. When PropagateSource is set it carries a postBuild.substitute
-// providing source_kind/source_name, so the source-agnostic stacks it
-// reconciles resolve their sourceRef to this cluster's source. DependsOn orders
-// it after other roots. Both are things `flux create kustomization` can't
-// express, so bootstrap goes through the kube adapter.
+// bootstrap. When Substitute is set it carries a postBuild.substituteFrom the
+// cluster-vars ConfigMap, so the portable stacks it reconciles resolve
+// ${source_kind}/${source_name}/${base_domain}/etc. to this cluster's values.
+// DependsOn orders it after other roots. Both are things `flux create
+// kustomization` can't express, so bootstrap goes through the kube adapter.
 type ReconcileRoot struct {
 	Name       string
 	Path       string
 	SourceKind string // OCIRepository | GitRepository (this cluster's source)
 	SourceName string
 	DependsOn  []string // reconcile-root names in flux-system to wait for
-	// PropagateSource emits postBuild.substitute source_kind/source_name so a
-	// portable (source-agnostic) tree binds to SourceKind/SourceName. Leave it
-	// off for source-pinned trees to avoid running substitution over them.
-	PropagateSource bool
+	// Substitute pulls cluster-vars via postBuild.substituteFrom so a portable
+	// (source-agnostic) tree binds to this cluster's values. Leave it off for
+	// source-pinned trees with no ${...} placeholders, to avoid running
+	// substitution over them.
+	Substitute bool
 }
 
-// ReconcileRootApplier applies a ReconcileRoot as a Flux Kustomization CR
-// (create-or-update), satisfied by the kube adapter.
-type ReconcileRootApplier interface {
+// Applier is the cluster-side surface bootstrap needs beyond the flux CLI:
+// writing the cluster-vars ConfigMap and applying reconcile roots as
+// Kustomization CRs (both create-or-update). Satisfied by the kube adapter.
+type Applier interface {
+	ApplyConfigMap(ctx context.Context, namespace, name string, data map[string]string) error
 	ApplyReconcileRoot(ctx context.Context, root ReconcileRoot) error
+}
+
+// SecretApplier plants a bootstrap secret (ensure a namespace, create-or-update a
+// Secret). Satisfied by the kube adapter.
+type SecretApplier interface {
+	EnsureNamespace(ctx context.Context, name string) error
+	ApplySecret(ctx context.Context, namespace, name string, data map[string][]byte, annotations map[string]string) error
+}
+
+// TLS issuer names — the cert-manager ClusterIssuer the Traefik default cert is
+// issued by, selected per cluster at bootstrap (--tls-issuer). SelfSigned pairs
+// with Cloudflare Full (preview: no rate limits, no external dep); LetsEncrypt
+// pairs with Full (strict) (production: a publicly-trusted cert via DNS-01).
+const (
+	TLSIssuerSelfSigned  = "selfsigned"
+	TLSIssuerLetsEncrypt = "letsencrypt"
+)
+
+// DNSZone returns the registrable domain (eTLD+1) of an ingress base_domain,
+// e.g. "preview.dantofa.dev" -> "dantofa.dev", "dantofa.com" -> "dantofa.com".
+// This is the cluster's Cloudflare zone apex: external-dns filters zones by apex
+// (a subdomain filter excludes the parent zone), so it is derived from the one
+// base_domain input rather than configured separately.
+func DNSZone(baseDomain string) (string, error) {
+	zone, err := publicsuffix.EffectiveTLDPlusOne(strings.TrimSuffix(baseDomain, "."))
+	if err != nil {
+		return "", fmt.Errorf("deriving DNS zone from base domain %q: %w", baseDomain, err)
+	}
+	return zone, nil
+}
+
+// ValidateTLSIssuer rejects an unknown --tls-issuer value. The name is also the
+// ClusterIssuer name substituted into the Traefik Certificate, so it must match
+// an issuer the cluster deploys (selfsigned is always present; letsencrypt is
+// added only for that value).
+func ValidateTLSIssuer(issuer string) error {
+	switch issuer {
+	case TLSIssuerSelfSigned, TLSIssuerLetsEncrypt:
+		return nil
+	default:
+		return fmt.Errorf("--tls-issuer must be %q or %q, got %q",
+			TLSIssuerSelfSigned, TLSIssuerLetsEncrypt, issuer)
+	}
+}
+
+// ValidateBitwardenConfig guards against a half-configured Bitwarden setup. When
+// a ClusterSecretStore is being scoped (a project or organization ID is given)
+// but the machine-account token is missing, ESO can never authenticate, secret-
+// zero is skipped, and every stack behind eso-config hangs until Flux times out
+// minutes later. Fail fast at bootstrap with an actionable message instead. An
+// entirely empty trio is allowed (bitwarden simply not configured for the
+// cluster), matching ProvisionESOAccessToken's no-op-on-empty contract.
+func ValidateBitwardenConfig(token, projectID, orgID string) error {
+	if token != "" || (projectID == "" && orgID == "") {
+		return nil
+	}
+	return errors.New("bitwarden project/organization configured but no access token: " +
+		"set --bitwarden-token or $BWS_ACCESS_TOKEN (note: `bws run` strips " +
+		"BWS_ACCESS_TOKEN from the child environment, so pass it explicitly)")
+}
+
+// ProvisionESOAccessToken plants secret-zero: the Bitwarden machine-account token
+// the ESO ClusterSecretStore authenticates with. Idempotent; a no-op when token
+// is empty (bitwarden not configured for this cluster, so the store stays
+// unauthenticated and its ExternalSecrets will not sync).
+func ProvisionESOAccessToken(ctx context.Context, a SecretApplier, token string) error {
+	if token == "" {
+		return nil
+	}
+	if err := a.EnsureNamespace(ctx, ESONamespace); err != nil {
+		return err
+	}
+	return a.ApplySecret(ctx, ESONamespace, BitwardenTokenSecret,
+		map[string][]byte{BitwardenTokenKey: []byte(token)}, nil)
 }
 
 // SourceSpec describes a Flux source to register: its Type (oci/git) selects the
@@ -124,12 +273,18 @@ type SourceSpec struct {
 }
 
 // KustomizationSpec describes a Kustomization reconciling a path from a source.
-// Type selects the source CRD kind (oci/git) the sourceRef points at.
+// Type selects the source CRD kind (oci/git) the sourceRef points at. Substitute
+// and DependsOn are the reconcile-root capabilities exposed to callers (a
+// downstream project layering its own payload): Substitute binds ${...} tokens
+// in the manifests to cluster-vars (e.g. ${base_domain}); DependsOn orders the
+// payload after platform layers (e.g. "ingress") so it is not applied early.
 type KustomizationSpec struct {
-	Type   SourceType
-	Name   string
-	Source string
-	Path   string
+	Type       SourceType
+	Name       string
+	Source     string
+	Path       string
+	DependsOn  []string
+	Substitute bool
 }
 
 // SourceResult reports a registered source.
@@ -184,10 +339,21 @@ func RemoveSource(ctx context.Context, e Engine, typ SourceType, name string) er
 }
 
 // AddKustomization registers (create-or-update) a Kustomization referencing a
-// source of spec.Type.
-func AddKustomization(ctx context.Context, e Engine, spec KustomizationSpec) (KustomizationResult, error) {
+// source of spec.Type. It applies a reconcile-root CR through the kube Applier
+// (not `flux create kustomization`) so it can carry postBuild.substituteFrom and
+// dependsOn — the capabilities a downstream payload needs, and the same CR shape
+// bootstrap's own roots use.
+func AddKustomization(ctx context.Context, a Applier, spec KustomizationSpec) (KustomizationResult, error) {
 	kind := spec.Type.FluxKind()
-	if err := e.CreateKustomization(ctx, spec.Name, kind, spec.Source, spec.Path); err != nil {
+	root := ReconcileRoot{
+		Name:       spec.Name,
+		Path:       spec.Path,
+		SourceKind: kind,
+		SourceName: spec.Source,
+		DependsOn:  spec.DependsOn,
+		Substitute: spec.Substitute,
+	}
+	if err := a.ApplyReconcileRoot(ctx, root); err != nil {
 		return KustomizationResult{}, err
 	}
 	return KustomizationResult{
@@ -267,13 +433,14 @@ func VerifyKustomizationsWait(ctx context.Context, s KustomizationStatuser, name
 	}
 }
 
-// Bootstrap installs Flux, registers the source (oci or git per src.Type), and
-// applies the given reconcile roots as Kustomization CRs in order. Each root's
-// SourceKind/SourceName are filled from the registered source, so callers pass
-// roots describing only the paths and ordering. This one sequence serves every
-// cluster: DOKS passes a single `cluster` root, kind passes `local-requirements`
-// then `cluster`.
-func Bootstrap(ctx context.Context, e Engine, a ReconcileRootApplier, version string, src SourceSpec, roots []ReconcileRoot) (BootstrapResult, error) {
+// Bootstrap installs Flux, registers the source (oci or git per src.Type), writes
+// the cluster-vars ConfigMap (this cluster's source coordinates merged with the
+// caller's vars, e.g. base_domain/cluster_name), then applies the given reconcile
+// roots as Kustomization CRs in order. Each root's SourceKind/SourceName are
+// filled from the registered source, so callers pass roots describing only the
+// paths and ordering. This one sequence serves every cluster: DOKS passes a
+// single `cluster` root, kind passes `local-requirements` then `cluster`.
+func Bootstrap(ctx context.Context, e Engine, a Applier, version string, src SourceSpec, vars map[string]string, roots []ReconcileRoot) (BootstrapResult, error) {
 	if err := e.Install(ctx, version); err != nil {
 		return BootstrapResult{}, err
 	}
@@ -281,6 +448,18 @@ func Bootstrap(ctx context.Context, e Engine, a ReconcileRootApplier, version st
 		return BootstrapResult{}, err
 	}
 	kind := src.Type.FluxKind()
+
+	// The cluster-vars ConfigMap the substituting roots read: the source
+	// coordinates (always) plus the caller's cluster identity, which the roots
+	// must be able to resolve before they reconcile.
+	clusterVars := map[string]string{VarSourceKind: kind, VarSourceName: src.Name}
+	for k, v := range vars {
+		clusterVars[k] = v
+	}
+	if err := a.ApplyConfigMap(ctx, clusterVarsNamespace, ClusterVarsName, clusterVars); err != nil {
+		return BootstrapResult{}, err
+	}
+
 	names := make([]string, 0, len(roots))
 	for _, r := range roots {
 		r.SourceKind, r.SourceName = kind, src.Name

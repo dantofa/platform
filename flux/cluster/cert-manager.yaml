@@ -1,0 +1,21 @@
+---
+# cert-manager, a shared stack the `cluster` reconcile root loads on every cluster
+# type. Source-agnostic sourceRef: the ${source_kind}/${source_name} placeholders
+# are filled by the root's postBuild.substituteFrom the cluster-vars ConfigMap. A
+# base dependency for stacks that need certificates (e.g. the ESO
+# bitwarden-sdk-server's serving TLS), so wait is set: this Kustomization is Ready
+# only once cert-manager is up, which a downstream `dependsOn: cert-manager` needs.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cert-manager
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./flux/cluster/cert-manager
+  prune: true
+  wait: true
+  sourceRef:
+    kind: ${source_kind}
+    name: ${source_name}
+    namespace: flux-system

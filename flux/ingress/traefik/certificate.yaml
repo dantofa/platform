@@ -1,0 +1,23 @@
+---
+# Traefik's default TLS certificate (served for every origin connection via
+# tlsStore.default), issued by cert-manager rather than a pre-provisioned
+# Cloudflare Origin CA cert stored in bws. issuerRef is per-cluster: the
+# selfsigned ClusterIssuer on preview (Cloudflare Full) or the letsencrypt ACME
+# issuer on production (Cloudflare Full strict, publicly trusted via DNS-01).
+# Covers the cluster's ${base_domain} and its one-level wildcard, so portable
+# Ingresses at either the apex or <app>.${base_domain} are served over 443.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: traefik-default-tls
+  namespace: traefik
+spec:
+  secretName: traefik-default-tls
+  duration: 2160h # 90d
+  renewBefore: 360h # 15d
+  issuerRef:
+    name: ${tls_issuer}
+    kind: ClusterIssuer
+  dnsNames:
+    - ${base_domain}
+    - "*.${base_domain}"

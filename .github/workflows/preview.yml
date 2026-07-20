@@ -6,6 +6,7 @@ permissions: {}
 env:
   FORCE_COLOR: ""
   CLUSTER_NAME: saas-preview-${{ github.event.pull_request.number }}
+  BASE_DOMAIN: preview.dantofa.dev
 jobs:
   preview:
     runs-on: ubuntu-latest
@@ -69,18 +70,52 @@ jobs:
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
           HEAD_REF: ${{ github.head_ref }}
+          # dctl plants secret-zero + scopes the ClusterSecretStore from these.
+          BWS_PROJECT_ID: ${{ vars.BWS_PROJECT_ID }}
+          BWS_ORGANIZATION_ID: ${{ vars.BWS_ORGANIZATION_ID }}
+        # `bws run` strips BWS_ACCESS_TOKEN from the child env (it is bws's own
+        # auth credential), so dctl's $BWS_ACCESS_TOKEN default would be empty and
+        # secret-zero silently skipped. Pass it explicitly on the flag, expanded
+        # by the outer shell from the step env before bws run consumes it.
         run: >-
           nix develop --command
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
-          nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME" --source-type git --source-revision "$HEAD_REF"
+          nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME"
+          --source-type git --source-revision "$HEAD_REF" --base-domain "$BASE_DOMAIN"
+          --tls-issuer selfsigned
+          --bitwarden-token "$BWS_ACCESS_TOKEN"
 
-      # Gate on the whole GitOps tree reconciling (generous timeout for cold
-      # image pulls) before checking the backup itself.
+      - name: Deploy echo payload app
+        run: >-
+          nix run .#default -- flux kustomization create echo
+          --source platform --type git --path ./flux/echo
+          --substitute --depends-on ingress --kubeconfig .kubeconfig
+
+      # Gate on Kustomization reconciliation
       - name: Verify Kustomizations reconciled
         run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
 
       - name: Verify Velero backup
         run: nix develop --command just verify-backup
+
+      # Full end-to-end proof: hit the echo backend
+      - name: Test echo service
+        run: |
+          retries=24
+          sleep=10
+          url="https://${BASE_DOMAIN}"
+          for i in $(seq 1 ${retries}); do
+            if body="$(curl -fsS --max-time 8 "$url")" \
+              && printf '%s' "$body" | grep -q "${BASE_DOMAIN}"; then
+              echo "e2e OK: echo reachable via ${url}"
+              printf '%s\n' "$body"
+              exit 0
+            fi
+            echo "attempt ${i}/${retries}: not ready, retrying in ${sleep}s..."
+            sleep ${sleep}
+          done
+          echo "e2e FAILED: ${url} did not serve echo within $((retries * sleep))s"
+          exit 1
 
       # Teardown of the bucket + scoped key the bootstrap created (a completed
       # backup leaves objects, so a plain `space delete` would not suffice).
@@ -93,8 +128,34 @@ jobs:
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
           nix run .#default -- digitalocean space unlink "$CLUSTER_NAME-backup" || true
 
+      # On failure, snapshot DO-side + in-cluster state before the teardown below
+      # destroys the cluster, so the failure can still be diagnosed afterwards.
+      - name: Capture failure diagnostics
+        if: failure()
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          KUBECONFIG: .kubeconfig
+        run: |
+          mkdir -p preview-diagnostics
+          nix develop --command bws run --project-id ${{ vars.BWS_PROJECT_ID }} -- \
+            nix run .#default -- digitalocean cluster list \
+            >preview-diagnostics/digitalocean-clusters.txt 2>&1 || true
+          nix develop --command just capture-diagnostics || true
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preview-diagnostics-${{ github.event.pull_request.number }}
+          path: preview-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # always(), not success(): a failed run still provisions a billable cluster,
+      # so it must be torn down regardless (diagnostics are captured above first).
+      # `cluster delete` is idempotent, so a no-op if create never got that far.
       - name: Destroy preview cluster
-        if: success()
+        if: always()
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-

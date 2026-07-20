@@ -1,27 +1,46 @@
 # `flux/` — the platform GitOps tree
 
-Two reconcile roots, one per environment:
+One source (`platform`), a **shared** stack tree, and per-cluster **reconcile
+roots** that `dctl` applies:
 
-- `flux/cluster/` — the **remote/DOKS** root. `dctl do cluster bootstrap`
-  installs Flux and registers a `platform` Kustomization pointing here
-  (`path: ./flux/cluster`). Deploys the Velero backup stack.
-- `flux/local/` — the **local/kind** root. `dctl local cluster bootstrap`
-  installs Flux and registers a `platform` **OCIRepository** Kustomization
-  pointing here (`path: ./flux/local`); `dctl local cluster push` publishes the
-  artifact it pulls. Stands up an in-cluster SeaweedFS backup target so the same
-  Velero stack works without a cloud provider.
+- `flux/cluster/` — the **shared, source-agnostic** stacks every cluster loads
+  (Velero backup + Kyverno policy engine). The `cluster` reconcile root points
+  here (`path: ./flux/cluster`) on both DOKS and kind. Each nested stack's
+  `sourceRef` uses `${source_kind}/${source_name}` so the same tree binds to a
+  `GitRepository` (DOKS/git) or an `OCIRepository` (local) per how the cluster was
+  bootstrapped.
+- `flux/local/` — the **local/kind-only requirements** (an in-cluster SeaweedFS S3
+  backend that stands in for a cloud bucket, plus the backup contract). The
+  `local-requirements` reconcile root points here (`path: ./flux/local`);
+  `dctl local cluster bootstrap`/`push` publishes the OCI artifact it pulls. It is
+  never reconciled from git, so its nested Kustomizations hardcode `OCIRepository`.
+  The `cluster` root `dependsOn` it, so the backup target exists before Velero.
 
-Each root's `kustomization.yaml` lists one nested Flux `Kustomization` per stack
-(e.g. `cluster/velero.yaml`); add a stack by dropping in `<stack>.yaml` + a
-`<stack>/` directory. The credential/target names below are **provider-agnostic**
-so the local target reuses the same contract with a different backend.
+Add a shared stack by dropping `<stack>.yaml` + a `<stack>/` directory into
+`flux/cluster/` and listing it in `flux/cluster/kustomization.yaml` — one line, no
+per-cluster wrappers.
+
+## `cluster-vars` — per-cluster values
+
+`dctl … cluster bootstrap` writes a `cluster-vars` ConfigMap in `flux-system` with
+this cluster's identity: `source_kind`, `source_name`, `base_domain`,
+`cluster_name`. The reconcile roots that reconcile a portable tree carry
+`postBuild.substituteFrom` it, so the shared manifests (and downstream
+Kustomizations that opt in) resolve those `${...}` tokens to per-cluster values.
+It is the single source of cluster-scoped variables.
+
+`dctl` applies the roots as Kustomization **CRs** (via client-go), not through
+`flux create kustomization` — which can't express `postBuild.substituteFrom` or
+`dependsOn`. Each root is created with `wait: true`, so it is Ready only once the
+objects it applies are (what `dependsOn` and the `dctl flux kustomization verify`
+gate rely on).
 
 ## Local backup target (SeaweedFS) — `flux/local`
 
-`flux/local` reproduces the same two objects Velero consumes, backed by an
-in-cluster S3 store instead of a cloud bucket. `dctl local cluster bootstrap`
-creates the `velero` namespace imperatively (so no stack here declares it and the
-reused `flux/cluster/velero` stack stays its sole Flux owner). Nested stacks:
+`flux/local` reproduces the two objects Velero consumes, backed by an in-cluster
+S3 store instead of a cloud bucket. `dctl local cluster bootstrap` creates the
+`velero` namespace imperatively (so no stack here declares it and the shared
+`flux/cluster/velero` stack stays its sole Flux owner). Nested stacks:
 
 1. `seaweedfs/operator/` — the SeaweedFS operator (+ CRDs) via its Helm chart, in
    its own `seaweedfs` namespace.
@@ -31,8 +50,6 @@ reused `flux/cluster/velero` stack stays its sole Flux owner). Nested stacks:
 3. `backup/` — the `backup-credential` Secret (same keys as the S3 identity) and
    the `backup-target` ConfigMap (`endpoint` = the SeaweedFS S3 service), both in
    the `velero` namespace.
-4. `velero.yaml` — `dependsOn` the `backup` stack and reconciles the shared
-   `./flux/cluster/velero` stack with those coordinates substituted in.
 
 The S3 identity in `seaweedfs/cluster/s3-config.yaml` and the Velero credential in
 `backup/credential.yaml` must stay in sync.
@@ -48,19 +65,19 @@ Velero consumes two objects from the `velero` namespace, regardless of backend:
 
 On DOKS these are written by `dctl` (which links a bucket and mints a
 **bucket-scoped** Spaces key); the provider API token never enters the cluster.
+On local they come from the `flux/local/backup` stack above.
 
-### Layering (why two Kustomizations)
+### Two substitution scopes
 
-`flux create kustomization` (what bootstrap runs) cannot set
-`postBuild.substituteFrom`, so substitution is pushed one level down:
+Substitution happens at two levels, by scope:
 
-- `./flux/cluster` (reconciled by `platform`) — no substitution. Applies the
-  nested `velero` Kustomization.
-- `./flux/cluster/velero` (reconciled by the nested `velero` Kustomization) —
-  applies the namespace, the Velero `HelmRepository` and `HelmRelease`, and has
-  `postBuild.substituteFrom` the `backup-target` ConfigMap, so the `${bucket}` /
-  `${region}` / `${endpoint}` placeholders in `release.yaml` are filled from the
-  coordinates the cluster was linked with.
+- The **`cluster` root** (`./flux/cluster`) — `substituteFrom` the `cluster-vars`
+  ConfigMap, filling `${source_kind}`/`${source_name}` (and, for the ingress
+  stacks, `${base_domain}`) into the shared Kustomizations before they apply.
+- The nested **`velero` Kustomization** (`./flux/cluster/velero`) —
+  `substituteFrom` the `backup-target` ConfigMap, filling `${bucket}` /
+  `${region}` / `${endpoint}` in `release.yaml` from the coordinates the cluster
+  was linked with (namespace-scoped, so it lives one level down).
 
-Rotating the credential (`dctl do space link <bucket>` again) rewrites the
-Secret in place; Velero picks it up without manifest changes.
+Rotating the credential (`dctl do space link <bucket>` again) rewrites the Secret
+in place; Velero picks it up without manifest changes.

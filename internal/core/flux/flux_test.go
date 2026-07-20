@@ -9,9 +9,11 @@ import (
 
 // fakeEngine records the flux operations invoked against it, in order.
 type fakeEngine struct {
-	events  []string
-	failOn  string // an event prefix that should return an error
-	failErr error
+	events        []string
+	failOn        string // an event prefix that should return an error
+	failErr       error
+	lastConfigMap map[string]string // data of the last ApplyConfigMap call
+	lastRoot      ReconcileRoot     // the last ApplyReconcileRoot argument
 }
 
 func (f *fakeEngine) record(event string) error {
@@ -34,10 +36,6 @@ func (f *fakeEngine) DeleteGitSource(_ context.Context, name string) error {
 	return f.record("delete-source:" + name)
 }
 
-func (f *fakeEngine) CreateKustomization(_ context.Context, name, sourceKind, source, path string) error {
-	return f.record("create-ks:" + name + ":" + sourceKind + "/" + source + ":" + path)
-}
-
 func (f *fakeEngine) DeleteKustomization(_ context.Context, name string) error {
 	return f.record("delete-ks:" + name)
 }
@@ -51,7 +49,13 @@ func (f *fakeEngine) DeleteOCISource(_ context.Context, name string) error {
 }
 
 func (f *fakeEngine) ApplyReconcileRoot(_ context.Context, root ReconcileRoot) error {
+	f.lastRoot = root
 	return f.record("apply-root:" + root.Name + ":" + root.SourceKind + "/" + root.SourceName + ":" + root.Path)
+}
+
+func (f *fakeEngine) ApplyConfigMap(_ context.Context, namespace, name string, data map[string]string) error {
+	f.lastConfigMap = data
+	return f.record("apply-cfgmap:" + namespace + "/" + name)
 }
 
 func eq(t *testing.T, got, want string) {
@@ -86,15 +90,28 @@ func TestAddSourceOCI(t *testing.T) {
 
 func TestAddKustomization(t *testing.T) {
 	e := &fakeEngine{}
-	res, err := AddKustomization(context.Background(), e, KustomizationSpec{Type: SourceOCI, Name: "app", Source: "platform", Path: "./flux"})
+	// A downstream payload: reconcile the caller's manifests from their own git
+	// source, resolving cluster-vars and waiting on the platform ingress.
+	res, err := AddKustomization(context.Background(), e, KustomizationSpec{
+		Type: SourceGit, Name: "app", Source: "app", Path: "./deploy",
+		Substitute: true, DependsOn: []string{"ingress"},
+	})
 	if err != nil {
 		t.Fatalf("AddKustomization: %v", err)
 	}
 	eq(t, res.Kustomization, "app")
-	eq(t, res.SourceKind, "OCIRepository")
-	eq(t, res.Source, "platform")
-	eq(t, res.Path, "./flux")
-	eq(t, e.events[0], "create-ks:app:OCIRepository/platform:./flux")
+	eq(t, res.SourceKind, "GitRepository")
+	eq(t, res.Source, "app")
+	eq(t, res.Path, "./deploy")
+	// It applies a reconcile-root CR (so substitute/dependsOn are expressible),
+	// not a plain `flux create kustomization`.
+	eq(t, e.events[0], "apply-root:app:GitRepository/app:./deploy")
+	if !e.lastRoot.Substitute {
+		t.Error("expected Substitute to be threaded into the reconcile root")
+	}
+	if len(e.lastRoot.DependsOn) != 1 || e.lastRoot.DependsOn[0] != "ingress" {
+		t.Errorf("DependsOn = %v, want [ingress]", e.lastRoot.DependsOn)
+	}
 }
 
 func TestRemoveSourceAndKustomization(t *testing.T) {
@@ -109,22 +126,25 @@ func TestRemoveSourceAndKustomization(t *testing.T) {
 	eq(t, e.events[1], "delete-ks:app")
 }
 
-func TestBootstrapOCIOrdersInstallSourceThenRoots(t *testing.T) {
+func TestBootstrapOCIOrdersInstallSourceVarsThenRoots(t *testing.T) {
 	e := &fakeEngine{}
 	// The local shape: an OCI source and two roots, cluster after requirements.
 	roots := []ReconcileRoot{
 		{Name: LocalRequirementsRootName, Path: DefaultLocalSourcePath},
-		{Name: ClusterRootName, Path: DefaultSourcePath, DependsOn: []string{LocalRequirementsRootName}, PropagateSource: true},
+		{Name: ClusterRootName, Path: DefaultSourcePath, DependsOn: []string{LocalRequirementsRootName}, Substitute: true},
 	}
+	vars := map[string]string{VarBaseDomain: "127.0.0.1.nip.io", VarClusterName: "local"}
 	res, err := Bootstrap(context.Background(), e, e, "",
 		SourceSpec{Type: SourceOCI, Name: DefaultSourceName, URL: "oci://kind-registry:5000/local", Revision: "latest"},
-		roots)
+		vars, roots)
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
+	// cluster-vars is written after the source, before the roots that read it.
 	want := []string{
 		"install:",
 		"create-oci-source:platform:oci://kind-registry:5000/local:latest",
+		"apply-cfgmap:flux-system/cluster-vars",
 		"apply-root:local-requirements:OCIRepository/platform:" + DefaultLocalSourcePath,
 		"apply-root:cluster:OCIRepository/platform:" + DefaultSourcePath,
 	}
@@ -134,7 +154,11 @@ func TestBootstrapOCIOrdersInstallSourceThenRoots(t *testing.T) {
 	for i := range want {
 		eq(t, e.events[i], want[i])
 	}
-	// Bootstrap fills each root's source from the registered source.
+	// cluster-vars merges the source coordinates with the caller's vars.
+	eq(t, e.lastConfigMap[VarSourceKind], "OCIRepository")
+	eq(t, e.lastConfigMap[VarSourceName], "platform")
+	eq(t, e.lastConfigMap[VarBaseDomain], "127.0.0.1.nip.io")
+	eq(t, e.lastConfigMap[VarClusterName], "local")
 	eq(t, res.Source, "platform")
 	eq(t, res.SourceKind, "OCIRepository")
 	if len(res.Kustomizations) != 2 || res.Kustomizations[0] != LocalRequirementsRootName || res.Kustomizations[1] != ClusterRootName {
@@ -147,13 +171,15 @@ func TestBootstrapGitRegistersGitSource(t *testing.T) {
 	// The DOKS/downstream shape: a git source and a single cluster root.
 	res, err := Bootstrap(context.Background(), e, e, "v2.3.0",
 		SourceSpec{Type: SourceGit, Name: DefaultSourceName, URL: DefaultSourceURL, Revision: DefaultSourceBranch},
-		[]ReconcileRoot{{Name: ClusterRootName, Path: DefaultSourcePath, PropagateSource: true}})
+		map[string]string{VarBaseDomain: "dev.example.com"},
+		[]ReconcileRoot{{Name: ClusterRootName, Path: DefaultSourcePath, Substitute: true}})
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 	want := []string{
 		"install:v2.3.0",
 		"create-source:platform:" + DefaultSourceURL + ":master",
+		"apply-cfgmap:flux-system/cluster-vars",
 		"apply-root:cluster:GitRepository/platform:" + DefaultSourcePath,
 	}
 	if len(e.events) != len(want) {
@@ -162,6 +188,8 @@ func TestBootstrapGitRegistersGitSource(t *testing.T) {
 	for i := range want {
 		eq(t, e.events[i], want[i])
 	}
+	eq(t, e.lastConfigMap[VarSourceKind], "GitRepository")
+	eq(t, e.lastConfigMap[VarBaseDomain], "dev.example.com")
 	eq(t, res.SourceKind, "GitRepository")
 	eq(t, res.Revision, "master")
 }
@@ -269,12 +297,75 @@ func TestBootstrapStopsOnInstallFailure(t *testing.T) {
 	sentinel := errors.New("install boom")
 	e := &fakeEngine{failOn: "install:", failErr: sentinel}
 	if _, err := Bootstrap(context.Background(), e, e, "",
-		SourceSpec{Type: SourceOCI, Name: "x"},
+		SourceSpec{Type: SourceOCI, Name: "x"}, nil,
 		[]ReconcileRoot{{Name: ClusterRootName, Path: "./flux"}}); !errors.Is(err, sentinel) {
 		t.Fatalf("expected install error, got %v", err)
 	}
 	// No source/root attempted after install failed.
 	if len(e.events) != 1 {
 		t.Fatalf("expected only the install attempt, got %v", e.events)
+	}
+}
+
+func TestDNSZone(t *testing.T) {
+	cases := []struct{ base, want string }{
+		{"preview.dantofa.dev", "dantofa.dev"},
+		{"dantofa.com", "dantofa.com"},
+		{"local.dantofa.dev", "dantofa.dev"},
+		{"a.b.dantofa.com", "dantofa.com"},
+		{"dantofa.dev.", "dantofa.dev"}, // trailing dot tolerated
+	}
+	for _, tc := range cases {
+		t.Run(tc.base, func(t *testing.T) {
+			got, err := DNSZone(tc.base)
+			if err != nil {
+				t.Fatalf("DNSZone(%q): %v", tc.base, err)
+			}
+			eq(t, got, tc.want)
+		})
+	}
+}
+
+func TestValidateTLSIssuer(t *testing.T) {
+	cases := []struct {
+		issuer  string
+		wantErr bool
+	}{
+		{"selfsigned", false},
+		{"letsencrypt", false},
+		{"", true},
+		{"self-signed", true},
+		{"letsencrypt-staging", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.issuer, func(t *testing.T) {
+			if err := ValidateTLSIssuer(tc.issuer); tc.wantErr != (err != nil) {
+				t.Fatalf("ValidateTLSIssuer(%q) err=%v, wantErr=%v", tc.issuer, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateBitwardenConfig(t *testing.T) {
+	cases := []struct {
+		name                    string
+		token, projectID, orgID string
+		wantErr                 bool
+	}{
+		{"fully configured", "tok", "proj", "org", false},
+		{"not configured at all", "", "", "", false},
+		{"token only", "tok", "", "", false},
+		{"project without token", "", "proj", "", true},
+		{"org without token", "", "", "org", true},
+		{"project and org without token", "", "proj", "org", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateBitwardenConfig(tc.token, tc.projectID, tc.orgID)
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("ValidateBitwardenConfig(%q,%q,%q) err=%v, wantErr=%v",
+					tc.token, tc.projectID, tc.orgID, err, tc.wantErr)
+			}
+		})
 	}
 }

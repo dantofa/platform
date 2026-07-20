@@ -1,0 +1,55 @@
+---
+# external-dns manages the Cloudflare DNS records for Ingress hosts (what the
+# tunnel controller does automatically on local). It is controller-agnostic —
+# it reads any Ingress' status and creates a proxied record (orange cloud)
+# pointing at the LoadBalancer address — so it is its own stack, not part of
+# Traefik's. DOKS-only: on kind the tunnel owns DNS. txtOwnerId is per-cluster
+# (${cluster_name}) so clusters sharing the zone don't fight over records (that
+# ownership TXT, not domainFilters, is what scopes deletion). domainFilters is
+# the cluster's Cloudflare zone apex ${dns_zone} (e.g. dantofa.dev), derived from
+# base_domain: external-dns discovers a zone by matching its apex, so a subdomain
+# filter would exclude the zone and no records would be created. Multiple domains
+# (dantofa.dev preview vs dantofa.com production) work from the same manifest via
+# ${dns_zone}. The Cloudflare token comes from the cloudflare-api secret (ESO);
+# Zone.DNS:Edit + Zone:Read.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: external-dns
+  namespace: external-dns
+spec:
+  interval: 10m
+  chart:
+    spec:
+      chart: external-dns
+      # Exact pin; bumped by Renovate (flux manager).
+      version: "1.21.1"
+      sourceRef:
+        kind: HelmRepository
+        name: external-dns
+        namespace: external-dns
+      interval: 1h
+  values:
+    provider:
+      name: cloudflare
+    sources:
+      - ingress
+    domainFilters:
+      - ${dns_zone}
+    policy: sync
+    txtOwnerId: ${cluster_name}
+    extraArgs:
+      - --cloudflare-proxied
+    env:
+      - name: CF_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: cloudflare-api
+            key: api_token
+    resources:
+      requests:
+        cpu: 25m
+        memory: 48Mi
+      limits:
+        cpu: 100m
+        memory: 96Mi

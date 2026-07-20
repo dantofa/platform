@@ -1,0 +1,25 @@
+---
+# ACME (Let's Encrypt) ClusterIssuer for production DOKS clusters. cert-manager
+# obtains a publicly-trusted certificate via a DNS-01 challenge solved through
+# Cloudflare, so Cloudflare Full (strict) validates the origin. Wildcards need
+# DNS-01, and the challenge never touches ingress (the origin is only reachable
+# through Cloudflare's proxy). No account email is set: cert-manager auto-renews,
+# so expiry notices are unnecessary. Deployed only when the cluster is
+# bootstrapped with --tls-issuer letsencrypt; preview clusters use the selfsigned
+# issuer + Cloudflare Full, avoiding Let's Encrypt rate limits on ephemeral
+# per-PR clusters.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token

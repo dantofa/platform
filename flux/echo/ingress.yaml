@@ -1,0 +1,25 @@
+---
+# Portable across cluster types: no ingressClassName, so it uses the cluster's
+# default IngressClass (cloudflare-tunnel on kind, nginx on DOKS). Hosted at the
+# cluster's base_domain apex (e.g. local.dantofa.dev) rather than a subdomain:
+# that keeps it one level under the zone apex, which Cloudflare Universal SSL
+# (*.dantofa.dev) covers — a per-service subdomain (echo.local.dantofa.dev) would
+# be two levels deep and need Advanced Certificate Manager. The base_domain is
+# substituted from cluster-vars by the echo Kustomization.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo
+  namespace: echo
+spec:
+  rules:
+    - host: ${base_domain}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: echo
+                port:
+                  number: 80

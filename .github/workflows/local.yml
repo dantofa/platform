@@ -53,7 +53,7 @@ jobs:
       # and wires the OCIRepository/Kustomization (a separate `push` is only for
       # iterating on edits afterwards).
       - name: Bootstrap the backup stack
-        run: nix run .#default -- local cluster bootstrap
+        run: nix run .#default -- local cluster bootstrap --base-domain local.dantofa.dev
 
       # Gate on the whole GitOps tree reconciling (generous timeout for cold
       # image pulls) before checking the backup itself.

@@ -4,6 +4,10 @@
 /dist/
 *.out
 
+# Failure-diagnostics dump from `just capture-diagnostics` (may contain cluster
+# logs/state; CI uploads it as an artifact instead of committing it).
+/preview-diagnostics/
+
 # nix build symlinks
 result
 result-*

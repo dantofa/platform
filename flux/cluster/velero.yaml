@@ -1,11 +1,11 @@
 ---
 # The Velero backup stack, one of the shared stacks the `cluster` reconcile root
 # loads on every cluster type. sourceRef is source-agnostic: the ${source_kind}/
-# ${source_name} placeholders are filled by the root's postBuild.substitute
-# (GitRepository/OCIRepository per how the cluster was bootstrapped). Its own
-# substituteFrom binds the SeaweedFS/Spaces coordinates from the backup-target
-# ConfigMap, which the root ordering guarantees exists first (local: the
-# local-requirements root; DOKS: `dctl do cluster bootstrap`).
+# ${source_name} placeholders are filled by the root's postBuild.substituteFrom
+# the cluster-vars ConfigMap (GitRepository/OCIRepository per how the cluster was
+# bootstrapped). Its own substituteFrom binds the SeaweedFS/Spaces coordinates
+# from the backup-target ConfigMap, which the root ordering guarantees exists
+# first (local: the local-requirements root; DOKS: `dctl do cluster bootstrap`).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

@@ -1,0 +1,41 @@
+---
+# Cloudflare Tunnel ingress controller (STRRL). The local-cluster ingress: the
+# tunnel is outbound-only, so it needs no LoadBalancer and works on kind, and
+# Cloudflare terminates edge TLS. Credentials come from the cloudflare-api secret
+# ESO materializes from bws (external-secret.yaml). isDefaultClass makes this the
+# cluster's default IngressClass, so downstream ingresses omit ingressClassName
+# and stay portable across cluster types.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cloudflare-tunnel
+  namespace: cloudflare-tunnel-system
+spec:
+  interval: 10m
+  chart:
+    spec:
+      chart: cloudflare-tunnel-ingress-controller
+      # Exact pin; bumped by Renovate (flux manager).
+      version: "0.0.23"
+      sourceRef:
+        kind: HelmRepository
+        name: cloudflare-tunnel-ingress-controller
+        namespace: cloudflare-tunnel-system
+      interval: 1h
+  values:
+    fullnameOverride: cloudflared
+    cloudflare:
+      secretRef:
+        name: cloudflare-api
+        accountIDKey: account_id
+        tunnelNameKey: tunnel_name
+        apiTokenKey: api_token
+    ingressClass:
+      isDefaultClass: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi

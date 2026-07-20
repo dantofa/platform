@@ -1,0 +1,24 @@
+---
+# cert-manager's cluster issuers, applied only after cert-manager itself is up.
+# They must be a separate Kustomization from the install: the ClusterIssuer CRD
+# is created by the cert-manager release, so applying an issuer in the same stack
+# fails its dry-run ("no matches for kind ClusterIssuer") and aborts the whole
+# apply — including the release — deadlocking the install. dependsOn cert-manager
+# breaks that. Source-agnostic like its siblings; wait so downstream stacks that
+# reference an issuer (e.g. eso's Certificate) can dependsOn it.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cert-manager-config
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./flux/cluster/cert-manager-config
+  prune: true
+  wait: true
+  dependsOn:
+    - name: cert-manager
+  sourceRef:
+    kind: ${source_kind}
+    name: ${source_name}
+    namespace: flux-system
