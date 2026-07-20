@@ -193,21 +193,34 @@ func newKustomizationVerifyCmd(kubeconfig *string) *cobra.Command {
 
 func newKustomizationCreateCmd(kubeconfig *string) *cobra.Command {
 	var source, path, sourceType string
+	var dependsOn []string
+	var substitute bool
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create or update a Kustomization. Idempotent.",
 		Long: "Create or update a Kustomization reconciling a path from a source. " +
 			"--type selects the source kind (oci/git); point --source at another " +
 			"source (or reuse the same name) to repoint the base kustomization away " +
-			"from the platform source.",
+			"from the platform source. A downstream project layers its own payload " +
+			"with this: register the source (`flux source create`), then reconcile " +
+			"its manifests here, using --substitute to resolve ${base_domain} and " +
+			"other cluster-vars, and --depends-on ingress to apply after the platform " +
+			"ingress is up.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := parseSourceType(sourceType)
 			if err != nil {
 				return render.Fail(err)
 			}
-			res, err := fluxcore.AddKustomization(cmd.Context(), fluxclient.New(*kubeconfig),
-				fluxcore.KustomizationSpec{Type: st, Name: args[0], Source: source, Path: path})
+			kc, err := kube.NewFromPath(*kubeconfig)
+			if err != nil {
+				return render.Fail(err)
+			}
+			res, err := fluxcore.AddKustomization(cmd.Context(), kc,
+				fluxcore.KustomizationSpec{
+					Type: st, Name: args[0], Source: source, Path: path,
+					DependsOn: dependsOn, Substitute: substitute,
+				})
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -218,6 +231,8 @@ func newKustomizationCreateCmd(kubeconfig *string) *cobra.Command {
 	f.StringVar(&sourceType, "type", string(fluxcore.DefaultSourceType), `Source kind to reference: "oci" or "git".`)
 	f.StringVar(&source, "source", fluxcore.DefaultSourceName, "Source name to reconcile from.")
 	f.StringVar(&path, "path", fluxcore.DefaultSourcePath, "Path within the source to reconcile.")
+	f.BoolVar(&substitute, "substitute", false, "Resolve ${...} tokens in the manifests from the cluster-vars ConfigMap (postBuild.substituteFrom).")
+	f.StringSliceVar(&dependsOn, "depends-on", nil, "Other Kustomization name(s) in flux-system to wait for before applying (repeatable/comma-separated).")
 	return cmd
 }
 

@@ -13,6 +13,7 @@ type fakeEngine struct {
 	failOn        string // an event prefix that should return an error
 	failErr       error
 	lastConfigMap map[string]string // data of the last ApplyConfigMap call
+	lastRoot      ReconcileRoot     // the last ApplyReconcileRoot argument
 }
 
 func (f *fakeEngine) record(event string) error {
@@ -35,10 +36,6 @@ func (f *fakeEngine) DeleteGitSource(_ context.Context, name string) error {
 	return f.record("delete-source:" + name)
 }
 
-func (f *fakeEngine) CreateKustomization(_ context.Context, name, sourceKind, source, path string) error {
-	return f.record("create-ks:" + name + ":" + sourceKind + "/" + source + ":" + path)
-}
-
 func (f *fakeEngine) DeleteKustomization(_ context.Context, name string) error {
 	return f.record("delete-ks:" + name)
 }
@@ -52,6 +49,7 @@ func (f *fakeEngine) DeleteOCISource(_ context.Context, name string) error {
 }
 
 func (f *fakeEngine) ApplyReconcileRoot(_ context.Context, root ReconcileRoot) error {
+	f.lastRoot = root
 	return f.record("apply-root:" + root.Name + ":" + root.SourceKind + "/" + root.SourceName + ":" + root.Path)
 }
 
@@ -92,15 +90,28 @@ func TestAddSourceOCI(t *testing.T) {
 
 func TestAddKustomization(t *testing.T) {
 	e := &fakeEngine{}
-	res, err := AddKustomization(context.Background(), e, KustomizationSpec{Type: SourceOCI, Name: "app", Source: "platform", Path: "./flux"})
+	// A downstream payload: reconcile the caller's manifests from their own git
+	// source, resolving cluster-vars and waiting on the platform ingress.
+	res, err := AddKustomization(context.Background(), e, KustomizationSpec{
+		Type: SourceGit, Name: "app", Source: "app", Path: "./deploy",
+		Substitute: true, DependsOn: []string{"ingress"},
+	})
 	if err != nil {
 		t.Fatalf("AddKustomization: %v", err)
 	}
 	eq(t, res.Kustomization, "app")
-	eq(t, res.SourceKind, "OCIRepository")
-	eq(t, res.Source, "platform")
-	eq(t, res.Path, "./flux")
-	eq(t, e.events[0], "create-ks:app:OCIRepository/platform:./flux")
+	eq(t, res.SourceKind, "GitRepository")
+	eq(t, res.Source, "app")
+	eq(t, res.Path, "./deploy")
+	// It applies a reconcile-root CR (so substitute/dependsOn are expressible),
+	// not a plain `flux create kustomization`.
+	eq(t, e.events[0], "apply-root:app:GitRepository/app:./deploy")
+	if !e.lastRoot.Substitute {
+		t.Error("expected Substitute to be threaded into the reconcile root")
+	}
+	if len(e.lastRoot.DependsOn) != 1 || e.lastRoot.DependsOn[0] != "ingress" {
+		t.Errorf("DependsOn = %v, want [ingress]", e.lastRoot.DependsOn)
+	}
 }
 
 func TestRemoveSourceAndKustomization(t *testing.T) {

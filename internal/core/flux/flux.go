@@ -150,7 +150,6 @@ type Engine interface {
 	DeleteGitSource(ctx context.Context, name string) error
 	CreateOCISource(ctx context.Context, name, url, tag string, insecure bool) error
 	DeleteOCISource(ctx context.Context, name string) error
-	CreateKustomization(ctx context.Context, name, sourceKind, source, path string) error
 	DeleteKustomization(ctx context.Context, name string) error
 }
 
@@ -254,12 +253,18 @@ type SourceSpec struct {
 }
 
 // KustomizationSpec describes a Kustomization reconciling a path from a source.
-// Type selects the source CRD kind (oci/git) the sourceRef points at.
+// Type selects the source CRD kind (oci/git) the sourceRef points at. Substitute
+// and DependsOn are the reconcile-root capabilities exposed to callers (a
+// downstream project layering its own payload): Substitute binds ${...} tokens
+// in the manifests to cluster-vars (e.g. ${base_domain}); DependsOn orders the
+// payload after platform layers (e.g. "ingress") so it is not applied early.
 type KustomizationSpec struct {
-	Type   SourceType
-	Name   string
-	Source string
-	Path   string
+	Type       SourceType
+	Name       string
+	Source     string
+	Path       string
+	DependsOn  []string
+	Substitute bool
 }
 
 // SourceResult reports a registered source.
@@ -314,10 +319,21 @@ func RemoveSource(ctx context.Context, e Engine, typ SourceType, name string) er
 }
 
 // AddKustomization registers (create-or-update) a Kustomization referencing a
-// source of spec.Type.
-func AddKustomization(ctx context.Context, e Engine, spec KustomizationSpec) (KustomizationResult, error) {
+// source of spec.Type. It applies a reconcile-root CR through the kube Applier
+// (not `flux create kustomization`) so it can carry postBuild.substituteFrom and
+// dependsOn — the capabilities a downstream payload needs, and the same CR shape
+// bootstrap's own roots use.
+func AddKustomization(ctx context.Context, a Applier, spec KustomizationSpec) (KustomizationResult, error) {
 	kind := spec.Type.FluxKind()
-	if err := e.CreateKustomization(ctx, spec.Name, kind, spec.Source, spec.Path); err != nil {
+	root := ReconcileRoot{
+		Name:       spec.Name,
+		Path:       spec.Path,
+		SourceKind: kind,
+		SourceName: spec.Source,
+		DependsOn:  spec.DependsOn,
+		Substitute: spec.Substitute,
+	}
+	if err := a.ApplyReconcileRoot(ctx, root); err != nil {
 		return KustomizationResult{}, err
 	}
 	return KustomizationResult{

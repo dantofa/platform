@@ -6,6 +6,7 @@ permissions: {}
 env:
   FORCE_COLOR: ""
   CLUSTER_NAME: saas-preview-${{ github.event.pull_request.number }}
+  BASE_DOMAIN: preview.dantofa.dev
 jobs:
   preview:
     runs-on: ubuntu-latest
@@ -80,17 +81,41 @@ jobs:
           nix develop --command
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
           nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME"
-          --source-type git --source-revision "$HEAD_REF" --base-domain preview.dantofa.dev
+          --source-type git --source-revision "$HEAD_REF" --base-domain "$BASE_DOMAIN"
           --tls-issuer selfsigned
           --bitwarden-token "$BWS_ACCESS_TOKEN"
 
-      # Gate on the whole GitOps tree reconciling (generous timeout for cold
-      # image pulls) before checking the backup itself.
+      - name: Deploy echo payload app
+        run: >-
+          nix run .#default -- flux kustomization create echo
+          --source platform --type git --path ./flux/echo
+          --substitute --depends-on ingress --kubeconfig .kubeconfig
+
+      # Gate on Kustomization reconciliation
       - name: Verify Kustomizations reconciled
         run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
 
       - name: Verify Velero backup
         run: nix develop --command just verify-backup
+
+      # Full end-to-end proof: hit the echo backend
+      - name: Test echo service
+        run: |
+          retries=24
+          sleep=10
+          url="https://${BASE_DOMAIN}"
+          for i in $(seq 1 ${retries}); do
+            if body="$(curl -fsS --max-time 8 "$url")" \
+              && printf '%s' "$body" | grep -q "${BASE_DOMAIN}"; then
+              echo "e2e OK: echo reachable via ${url}"
+              printf '%s\n' "$body"
+              exit 0
+            fi
+            echo "attempt ${i}/${retries}: not ready, retrying in ${sleep}s..."
+            sleep ${sleep}
+          done
+          echo "e2e FAILED: ${url} did not serve echo within $((retries * sleep))s"
+          exit 1
 
       # Teardown of the bucket + scoped key the bootstrap created (a completed
       # backup leaves objects, so a plain `space delete` would not suffice).
