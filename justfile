@@ -248,7 +248,10 @@ verify-backup:
     --from-literal=ok=1 --dry-run=client -o yaml | kubectl apply -f -
   backup="ci-verify-$(date +%s)"
   velero backup create "$backup" --namespace "$ns" --include-namespaces default --wait || true
-  phase="$(kubectl -n "$ns" get backup "$backup" -o jsonpath='{.status.phase}')"
+  # Fully-qualified resource.group: CloudNativePG also defines a `Backup` CRD
+  # (backups.postgresql.cnpg.io), so the bare `backup` short name is ambiguous and
+  # kubectl would resolve it to the wrong group.
+  phase="$(kubectl -n "$ns" get backups.velero.io "$backup" -o jsonpath='{.status.phase}')"
   echo "Backup $backup phase: $phase"
   if [ "$phase" != "Completed" ]; then
     velero backup describe "$backup" --namespace "$ns" --details || true
