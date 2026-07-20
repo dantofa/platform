@@ -130,7 +130,7 @@ local action *args:
 # echo, which deploys by default on local). base_domain is a real Cloudflare zone
 # so the tunnel publishes a resolvable record. bootstrap reads BWS_* from the env
 # for the ESO secret-zero; local needs no DO/Spaces creds, so no `bws run` here.
-local-create:
+local-create *args:
   #!/usr/bin/env bash
   set -euo pipefail
   : "${BWS_ACCESS_TOKEN:?set BWS_ACCESS_TOKEN (dev shell + bws login)}"
@@ -138,7 +138,7 @@ local-create:
   : "${BWS_ORGANIZATION_ID:?set BWS_ORGANIZATION_ID}"
   base_domain=local.dantofa.dev
   go run ./cmd/dctl local cluster create --control-planes 1 --workers 2
-  go run ./cmd/dctl local cluster bootstrap --base-domain "$base_domain"
+  go run ./cmd/dctl local cluster bootstrap --base-domain "$base_domain" {{args}}
 
 # Verify the running cluster: nodes ready, the whole GitOps tree reconciled, the
 # Velero backup works, echo is reachable end-to-end through the Cloudflare tunnel,
@@ -182,11 +182,11 @@ local-verify:
 # Delete the cluster via the graceful teardown (drains DNS records, stops the
 # tunnel controller, reaps the tunnel), then assert the tunnel object is actually
 # gone from Cloudflare -- the leak this change fixes.
-local-delete:
+local-delete *args:
   #!/usr/bin/env bash
   set -euo pipefail
   cluster=local
-  go run ./cmd/dctl local cluster delete
+  go run ./cmd/dctl local cluster delete {{args}}
   n="$(just _cf-tunnel-count "$cluster")"
   echo "cloudflare tunnels named $cluster after teardown: $n"
   test "$n" -eq 0
@@ -197,13 +197,17 @@ local-delete:
 _cf-tunnel-count name:
   #!/usr/bin/env bash
   set -euo pipefail
-  bws run --project-id "$BWS_PROJECT_ID" -- bash -c '
-    curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-      "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel?name=$1&is_deleted=false" \
-      | jq ".result | length"' bash "{{name}}"
+  # Capture the CF creds out of bws first (a nested `bash -c '...'` through
+  # `bws run` mangles the quoting). The token goes to curl via stdin (-H @-),
+  # never argv.
+  token="$(bws run --project-id "$BWS_PROJECT_ID" -- printenv CLOUDFLARE_API_TOKEN)"
+  account="$(bws run --project-id "$BWS_PROJECT_ID" -- printenv CLOUDFLARE_ACCOUNT_ID)"
+  printf 'Authorization: Bearer %s\n' "$token" \
+    | curl -fsS -H @- \
+      "https://api.cloudflare.com/client/v4/accounts/$account/cfd_tunnel?name={{name}}&is_deleted=false" \
+    | jq '.result | length'
 
 local-test: local-create local-verify && local-delete
-
 
 github action:
   just github-{{action}}

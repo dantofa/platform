@@ -46,6 +46,34 @@ func zoneCM() map[string]string {
 	}
 }
 
+func TestResolveZonePrefersDNSZone(t *testing.T) {
+	r := &fakeReader{configMaps: map[string]string{
+		"flux-system/" + fluxcore.ClusterVarsName + "/" + fluxcore.VarDNSZone:    "dantofa.dev",
+		"flux-system/" + fluxcore.ClusterVarsName + "/" + fluxcore.VarBaseDomain: "local.dantofa.dev",
+	}}
+	zone, err := ResolveZone(context.Background(), r)
+	if err != nil || zone != "dantofa.dev" {
+		t.Fatalf("ResolveZone = %q, %v; want dantofa.dev", zone, err)
+	}
+}
+
+func TestResolveZoneFallsBackToBaseDomain(t *testing.T) {
+	// A cluster bootstrapped before dns_zone existed: only base_domain is set.
+	r := &fakeReader{configMaps: map[string]string{
+		"flux-system/" + fluxcore.ClusterVarsName + "/" + fluxcore.VarBaseDomain: "preview.dantofa.dev",
+	}}
+	zone, err := ResolveZone(context.Background(), r)
+	if err != nil || zone != "dantofa.dev" {
+		t.Fatalf("ResolveZone fallback = %q, %v; want dantofa.dev", zone, err)
+	}
+}
+
+func TestResolveZoneErrorsWhenNeitherSet(t *testing.T) {
+	if _, err := ResolveZone(context.Background(), &fakeReader{}); err == nil {
+		t.Fatal("expected an error when neither dns_zone nor base_domain is set")
+	}
+}
+
 func TestRunReapsTunnelWhenPresent(t *testing.T) {
 	r := &fakeReader{
 		secrets: map[string]string{
