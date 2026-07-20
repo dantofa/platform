@@ -12,10 +12,12 @@ type fakeKube struct {
 	hosts       []string
 	suspended   int
 	deleted     int
+	stopped     int
 	suspendErr  error
 	deleteErr   error
 	suspendSeen bool
 	deleteSeen  bool
+	stopSeen    bool
 }
 
 func (f *fakeKube) IngressHosts(context.Context) ([]string, error) { return f.hosts, nil }
@@ -27,6 +29,11 @@ func (f *fakeKube) SuspendKustomizations(context.Context) (int, error) {
 func (f *fakeKube) DeleteIngresses(context.Context) (int, error) {
 	f.deleteSeen = true
 	return f.deleted, f.deleteErr
+}
+
+func (f *fakeKube) StopTunnelController(context.Context) (int, error) {
+	f.stopSeen = true
+	return f.stopped, nil
 }
 
 // fakeDNS simulates records that disappear after a number of polls (drainAfter),

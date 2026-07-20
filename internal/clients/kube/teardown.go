@@ -14,6 +14,10 @@ import (
 
 var _ teardowncore.KubeAPI = (*Client)(nil)
 
+// tunnelNamespace is where the Cloudflare Tunnel controller (and the cloudflared
+// Deployment it manages) run; mirrors flux/ingress/tunnel.
+const tunnelNamespace = "cloudflare-tunnel-system"
+
 // IngressHosts returns every hostname declared across all Ingresses in every
 // namespace (deduplicated). Implements teardowncore.KubeAPI.
 func (c *Client) IngressHosts(ctx context.Context) ([]string, error) {
@@ -74,6 +78,30 @@ func (c *Client) SuspendKustomizations(ctx context.Context) (int, error) {
 		)
 		if err != nil {
 			return n, fmt.Errorf("suspending kustomization %s/%s: %w", item.GetNamespace(), item.GetName(), err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+// StopTunnelController deletes every Deployment in the tunnel controller's
+// namespace so cloudflared disconnects (a Cloudflare Tunnel cannot be deleted
+// while it has active connections). An absent namespace is a no-op returning 0
+// (e.g. on DOKS). Flux is already suspended by the time this runs, so the
+// Deployments are not re-created. Implements teardowncore.KubeAPI.
+func (c *Client) StopTunnelController(ctx context.Context) (int, error) {
+	deploys := c.cs.AppsV1().Deployments(tunnelNamespace)
+	list, err := deploys.List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	n := 0
+	for i := range list.Items {
+		if err := deploys.Delete(ctx, list.Items[i].Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return n, fmt.Errorf("deleting tunnel deployment %s: %w", list.Items[i].Name, err)
 		}
 		n++
 	}
