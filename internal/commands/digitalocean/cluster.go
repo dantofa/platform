@@ -26,9 +26,9 @@ const (
 	teardownInterval = 5 * time.Second
 )
 
-// newDNSClient adapts the cloudflare client constructor to the teardown factory
+// newCFClient adapts the cloudflare client constructor to the teardown factory
 // signature (concrete -> interface).
-func newDNSClient(token string) (teardowncore.DNSAPI, error) {
+func newCFClient(token string) (teardowncore.CloudflareAPI, error) {
 	return cfclient.New(token)
 }
 
@@ -239,7 +239,7 @@ func teardownCluster(ctx context.Context, cluster, token string, force bool) err
 		}
 		return teardownFailed(fmt.Errorf("connecting to cluster for teardown: %w", err), force)
 	}
-	res, err := teardowncore.Run(ctx, kc, kc, newDNSClient, teardownTimeout, teardownInterval)
+	res, err := teardowncore.Run(ctx, kc, kc, newCFClient, teardownTimeout, teardownInterval)
 	if err != nil {
 		return teardownFailed(err, force)
 	}

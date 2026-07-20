@@ -64,6 +64,169 @@ lint: shellcheck
 format *args=".":
   gofumpt -w {{args}}
 
+# Manual refresh of the pins Renovate does not own: Go modules and the Nix flake
+# inputs (the flake tracks nixos-unstable, a rolling branch with no versions to
+# PR, so it stays manual). GitHub Actions, Go modules, and the Flux manifest
+# chart/image versions also get automated PRs from Renovate (the hosted Mend
+# app; see .github/renovate.json5). NB: bumping Go deps changes go.sum, so the
+# flake's `vendorHash` must be recomputed (set it to lib.fakeHash, `nix build`,
+# copy the reported hash) — that applies to Renovate's gomod PRs too. Run this
+# deliberately — freshness is a manual operation, never a merge gate.
+update: && vendor-hash
+  #!/usr/bin/env bash
+  set -euo pipefail
+  go get -u ./...
+  go mod tidy
+  nix flake update
+
+# Recompute the flake vendorHash for the current go.sum: blank it to fakeHash so
+# `nix build` reports the real hash, write that back, and confirm the package
+# builds. Run by `just update`; also run standalone on a Renovate gomod PR, which
+# changes go.sum but cannot recompute the hash itself.
+vendor-hash:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  fake="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  sed -i "s|vendorHash = \"sha256-[^\"]*\";|vendorHash = \"$fake\";|" flake.nix
+  got="$(nix build .#default 2>&1 | sed -n 's|.*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\).*|\1|p' | head -1 || true)"
+  if [ -z "$got" ]; then
+    echo "error: could not determine vendorHash from nix build output" >&2
+    exit 1
+  fi
+  sed -i "s|vendorHash = \"sha256-[^\"]*\";|vendorHash = \"$got\";|" flake.nix
+  nix build ".#default" >/dev/null
+
+sast:
+  #!/usr/bin/env bash
+  set -uo pipefail
+  out="$(govulncheck ./... 2>&1)"; status=$?
+  echo "$out"
+  [ "$status" -eq 0 ] && exit 0
+  # govulncheck exits non-zero when a vulnerability is actually called. A
+  # standard-library-only finding is fixed by bumping the (nix-pinned) Go
+  # toolchain via `just update`, not by our code — and freshness is never a merge
+  # gate here — so it warns rather than fails. Any finding in our modules/deps
+  # still fails the gate.
+  affected="$(echo "$out" | grep 'Your code is affected by')"
+  [ -z "$affected" ] && exit 0
+  if echo "$affected" | grep -qv 'Go standard library'; then exit 1; fi
+  echo "::warning::govulncheck: only standard-library vulnerabilities affect this code; bump the Go toolchain via 'just update'."
+
+local action *args:
+  just local-{{action}} {{args}}
+
+# End-to-end suite for a real local (kind) cluster + the Cloudflare tunnel
+# ingress. Unlike the `local` CI workflow (which uses in-cluster DNS), this
+# exercises the live tunnel path so it can verify the teardown reaps the
+# Cloudflare tunnel object. Requires the dev shell (kind/flux/kubectl/curl/jq/bws
+# on PATH) and BWS_ACCESS_TOKEN / BWS_PROJECT_ID / BWS_ORGANIZATION_ID in the
+# environment (the ESO secret-zero + the Cloudflare API assertions). Recipes use
+# bash-local base_domain/cluster (not just-interpolation) so `just shellcheck`
+# still lints them. `local-test` runs create -> verify, and only tears down on
+# success (a failed verify leaves the cluster up for debugging; run
+# `just local-delete` to clean up).
+
+# Create the kind cluster and bootstrap the platform (Flux + ingress/tunnel +
+# echo, which deploys by default on local). base_domain is a real Cloudflare zone
+# so the tunnel publishes a resolvable record. bootstrap reads BWS_* from the env
+# for the ESO secret-zero; local needs no DO/Spaces creds, so no `bws run` here.
+local-create:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  : "${BWS_ACCESS_TOKEN:?set BWS_ACCESS_TOKEN (dev shell + bws login)}"
+  : "${BWS_PROJECT_ID:?set BWS_PROJECT_ID}"
+  : "${BWS_ORGANIZATION_ID:?set BWS_ORGANIZATION_ID}"
+  base_domain=local.dantofa.dev
+  go run ./cmd/dctl local cluster create --control-planes 1 --workers 2
+  go run ./cmd/dctl local cluster bootstrap --base-domain "$base_domain"
+
+# Verify the running cluster: nodes ready, the whole GitOps tree reconciled, the
+# Velero backup works, echo is reachable end-to-end through the Cloudflare tunnel,
+# and the tunnel object exists (the pre-delete precondition for the teardown
+# test).
+local-verify:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  export KUBECONFIG=.kubeconfig
+  base_domain=local.dantofa.dev
+  cluster=local
+  go run ./cmd/dctl local cluster connect
+  kubectl wait --for=condition=Ready nodes --all --timeout=180s
+  # Gate on the whole GitOps tree reconciling (generous timeout for cold pulls).
+  go run ./cmd/dctl flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
+  # Existing backup e2e.
+  just verify-backup
+  # End-to-end ingress: echo served at the apex through the tunnel + Cloudflare.
+  retries=24
+  sleep=10
+  url="https://$base_domain"
+  echo "Probing ${url} through the Cloudflare tunnel..."
+  for i in $(seq 1 "$retries"); do
+    if body="$(curl -fsS --max-time 8 "$url")" \
+      && printf '%s' "$body" | grep -q "$base_domain"; then
+      echo "e2e OK: echo reachable via ${url}"
+      break
+    fi
+    if [ "$i" -eq "$retries" ]; then
+      echo "e2e FAILED: ${url} did not serve echo within $((retries * sleep))s" >&2
+      exit 1
+    fi
+    echo "attempt ${i}/${retries}: not ready, retrying in ${sleep}s..."
+    sleep "$sleep"
+  done
+  # Precondition for the teardown test: the tunnel object exists in Cloudflare.
+  n="$(just _cf-tunnel-count "$cluster")"
+  echo "cloudflare tunnels named $cluster: $n"
+  test "$n" -ge 1
+
+# Delete the cluster via the graceful teardown (drains DNS records, stops the
+# tunnel controller, reaps the tunnel), then assert the tunnel object is actually
+# gone from Cloudflare -- the leak this change fixes.
+local-delete:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cluster=local
+  go run ./cmd/dctl local cluster delete
+  n="$(just _cf-tunnel-count "$cluster")"
+  echo "cloudflare tunnels named $cluster after teardown: $n"
+  test "$n" -eq 0
+
+# Print how many non-deleted Cloudflare Tunnels are named <name> (via the bws
+# project's CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID). Internal helper for the
+# local-verify / local-delete tunnel assertions.
+_cf-tunnel-count name:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  bws run --project-id "$BWS_PROJECT_ID" -- bash -c '
+    curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+      "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel?name=$1&is_deleted=false" \
+      | jq ".result | length"' bash "{{name}}"
+
+local-test: local-create local-verify && local-delete
+
+
+github action:
+  just github-{{action}}
+
+github-repo:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  config_dir=".github/repo-config"
+  repo="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
+  echo "Applying repository configuration to $repo"
+  echo "==> repository settings"
+  gh api -X PATCH "repos/$repo" --input "$config_dir/repo-settings.json" >/dev/null
+  echo "==> master branch ruleset"
+  ruleset_id="$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "master") | .id')"
+  if [ -n "$ruleset_id" ]; then
+    echo "    updating existing ruleset (id $ruleset_id)"
+    gh api -X PUT "repos/$repo/rulesets/$ruleset_id" --input "$config_dir/ruleset-master.json" >/dev/null
+  else
+    echo "    creating ruleset"
+    gh api -X POST "repos/$repo/rulesets" --input "$config_dir/ruleset-master.json" >/dev/null
+  fi
+  echo "Done."
+
 # Integration check (CI): assert Flux installed Velero and a backup completes.
 # Targets the cluster in $KUBECONFIG; run after bootstrapping the backup stack
 # (local: `local cluster bootstrap` + `push`; preview: `do cluster bootstrap`).
@@ -85,7 +248,10 @@ verify-backup:
     --from-literal=ok=1 --dry-run=client -o yaml | kubectl apply -f -
   backup="ci-verify-$(date +%s)"
   velero backup create "$backup" --namespace "$ns" --include-namespaces default --wait || true
-  phase="$(kubectl -n "$ns" get backup "$backup" -o jsonpath='{.status.phase}')"
+  # Fully-qualified resource.group: CloudNativePG also defines a `Backup` CRD
+  # (backups.postgresql.cnpg.io), so the bare `backup` short name is ambiguous and
+  # kubectl would resolve it to the wrong group.
+  phase="$(kubectl -n "$ns" get backups.velero.io "$backup" -o jsonpath='{.status.phase}')"
   echo "Backup $backup phase: $phase"
   if [ "$phase" != "Completed" ]; then
     velero backup describe "$backup" --namespace "$ns" --details || true
@@ -161,72 +327,3 @@ capture-diagnostics:
     >"$out/logs_tunnel-controller.txt" 2>&1 || true
   echo "diagnostics captured to $out/"
 
-# Manual refresh of the pins Renovate does not own: Go modules and the Nix flake
-# inputs (the flake tracks nixos-unstable, a rolling branch with no versions to
-# PR, so it stays manual). GitHub Actions, Go modules, and the Flux manifest
-# chart/image versions also get automated PRs from Renovate (the hosted Mend
-# app; see .github/renovate.json5). NB: bumping Go deps changes go.sum, so the
-# flake's `vendorHash` must be recomputed (set it to lib.fakeHash, `nix build`,
-# copy the reported hash) — that applies to Renovate's gomod PRs too. Run this
-# deliberately — freshness is a manual operation, never a merge gate.
-update: && vendor-hash
-  #!/usr/bin/env bash
-  set -euo pipefail
-  go get -u ./...
-  go mod tidy
-  nix flake update
-
-# Recompute the flake vendorHash for the current go.sum: blank it to fakeHash so
-# `nix build` reports the real hash, write that back, and confirm the package
-# builds. Run by `just update`; also run standalone on a Renovate gomod PR, which
-# changes go.sum but cannot recompute the hash itself.
-vendor-hash:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  fake="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-  sed -i "s|vendorHash = \"sha256-[^\"]*\";|vendorHash = \"$fake\";|" flake.nix
-  got="$(nix build .#default 2>&1 | sed -n 's|.*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\).*|\1|p' | head -1 || true)"
-  if [ -z "$got" ]; then
-    echo "error: could not determine vendorHash from nix build output" >&2
-    exit 1
-  fi
-  sed -i "s|vendorHash = \"sha256-[^\"]*\";|vendorHash = \"$got\";|" flake.nix
-  nix build ".#default" >/dev/null
-
-sast:
-  #!/usr/bin/env bash
-  set -uo pipefail
-  out="$(govulncheck ./... 2>&1)"; status=$?
-  echo "$out"
-  [ "$status" -eq 0 ] && exit 0
-  # govulncheck exits non-zero when a vulnerability is actually called. A
-  # standard-library-only finding is fixed by bumping the (nix-pinned) Go
-  # toolchain via `just update`, not by our code — and freshness is never a merge
-  # gate here — so it warns rather than fails. Any finding in our modules/deps
-  # still fails the gate.
-  affected="$(echo "$out" | grep 'Your code is affected by')"
-  [ -z "$affected" ] && exit 0
-  if echo "$affected" | grep -qv 'Go standard library'; then exit 1; fi
-  echo "::warning::govulncheck: only standard-library vulnerabilities affect this code; bump the Go toolchain via 'just update'."
-
-github action:
-  just github-{{action}}
-
-github-repo:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  config_dir=".github/repo-config"
-  repo="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
-  echo "Applying repository configuration to $repo"
-  echo "==> repository settings"
-  gh api -X PATCH "repos/$repo" --input "$config_dir/repo-settings.json" >/dev/null
-  echo "==> master branch ruleset"
-  ruleset_id="$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "master") | .id')"
-  if [ -n "$ruleset_id" ]; then
-    echo "    updating existing ruleset (id $ruleset_id)"
-    gh api -X PUT "repos/$repo/rulesets/$ruleset_id" --input "$config_dir/ruleset-master.json" >/dev/null
-  else
-    echo "    creating ruleset"
-    gh api -X POST "repos/$repo/rulesets" --input "$config_dir/ruleset-master.json" >/dev/null
-  fi
-  echo "Done."

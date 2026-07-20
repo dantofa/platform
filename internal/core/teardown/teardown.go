@@ -25,10 +25,15 @@ type KubeAPI interface {
 	SuspendKustomizations(ctx context.Context) (int, error)
 	// DeleteIngresses deletes every Ingress in all namespaces. Returns the count.
 	DeleteIngresses(ctx context.Context) (int, error)
+	// StopTunnelController deletes the Cloudflare Tunnel controller workloads so
+	// cloudflared disconnects (a precondition for deleting the tunnel object).
+	// A no-op returning 0 when the controller is absent (e.g. DOKS). Returns the
+	// count deleted.
+	StopTunnelController(ctx context.Context) (int, error)
 }
 
-// DNSAPI is the Cloudflare surface teardown polls and falls back on (satisfied by
-// clients/cloudflare).
+// DNSAPI is the Cloudflare record surface teardown polls and falls back on
+// (satisfied by clients/cloudflare).
 type DNSAPI interface {
 	// RecordedHosts returns the subset of hosts that still have a DNS record in
 	// the zone (so an empty result means the drain is complete).
@@ -36,6 +41,16 @@ type DNSAPI interface {
 	// DeleteHostRecords force-deletes any records for hosts in the zone (the
 	// fallback when the controller did not drain them in time). Returns the count.
 	DeleteHostRecords(ctx context.Context, zone string, hosts []string) (int, error)
+}
+
+// CloudflareAPI is the full Cloudflare surface: DNS record ops plus account-level
+// tunnel deletion (local clusters whose tunnel controller leaves its Cloudflare
+// Tunnel behind on teardown). Satisfied by clients/cloudflare.
+type CloudflareAPI interface {
+	DNSAPI
+	// DeleteTunnelByName deletes the tunnel(s) named name in the account, returning
+	// whether any were deleted.
+	DeleteTunnelByName(ctx context.Context, accountID, name string) (bool, error)
 }
 
 // Options parameterizes a teardown run.
@@ -52,6 +67,8 @@ type Result struct {
 	DeletedIngresses        int      `json:"deleted_ingresses"`
 	ForceDeletedRecords     int      `json:"force_deleted_records"`
 	Drained                 bool     `json:"drained"`
+	StoppedTunnelWorkloads  int      `json:"stopped_tunnel_workloads,omitempty"`
+	TunnelDeleted           bool     `json:"tunnel_deleted,omitempty"`
 }
 
 // Teardown runs the graceful drain. It is a no-op success when the cluster has no

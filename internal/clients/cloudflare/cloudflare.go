@@ -8,13 +8,22 @@ package cloudflare
 import (
 	"context"
 	"fmt"
+	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
 
 	teardowncore "github.com/dantofa/platform/internal/core/teardown"
 )
 
-var _ teardowncore.DNSAPI = (*Client)(nil)
+var _ teardowncore.CloudflareAPI = (*Client)(nil)
+
+// tunnelDeleteAttempts / tunnelDeleteBackoff bound the delete retry: a tunnel
+// cannot be deleted while it has active connections, and those take a moment to
+// clear after cloudflared stops, so cleanup+delete is retried.
+const (
+	tunnelDeleteAttempts = 5
+	tunnelDeleteBackoff  = 3 * time.Second
+)
 
 // Client wraps the Cloudflare API bound to a single account token, caching the
 // zone-name -> zone-id lookups it resolves.
@@ -90,4 +99,44 @@ func (c *Client) DeleteHostRecords(ctx context.Context, zone string, hosts []str
 		}
 	}
 	return n, nil
+}
+
+// DeleteTunnelByName deletes the (non-deleted) Cloudflare Tunnel(s) named name in
+// the account, returning whether any were deleted. The tunnel controller leaves
+// its tunnel behind on teardown, so this reaps it. A tunnel cannot be deleted
+// while it has active connections, so each delete is preceded by a forced
+// connection cleanup and retried while the connections drain. Implements
+// teardowncore.CloudflareAPI.
+func (c *Client) DeleteTunnelByName(ctx context.Context, accountID, name string) (bool, error) {
+	rc := cf.AccountIdentifier(accountID)
+	notDeleted := false
+	tunnels, _, err := c.api.ListTunnels(ctx, rc, cf.TunnelListParams{Name: name, IsDeleted: &notDeleted})
+	if err != nil {
+		return false, fmt.Errorf("listing tunnels named %q: %w", name, err)
+	}
+	deletedAny := false
+	for i := range tunnels {
+		if err := c.deleteTunnel(ctx, rc, tunnels[i].ID); err != nil {
+			return deletedAny, fmt.Errorf("deleting tunnel %s (%s): %w", name, tunnels[i].ID, err)
+		}
+		deletedAny = true
+	}
+	return deletedAny, nil
+}
+
+func (c *Client) deleteTunnel(ctx context.Context, rc *cf.ResourceContainer, id string) error {
+	var lastErr error
+	for attempt := 0; attempt < tunnelDeleteAttempts; attempt++ {
+		// Force-deregister lingering connections, then delete.
+		_ = c.api.CleanupTunnelConnections(ctx, rc, id)
+		if lastErr = c.api.DeleteTunnel(ctx, rc, id); lastErr == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(tunnelDeleteBackoff):
+		}
+	}
+	return lastErr
 }

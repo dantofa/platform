@@ -1,0 +1,19 @@
+---
+# The Trivy Operator, a shared stack the `cluster` reconcile root loads on every
+# cluster type: it continuously scans running workloads' images for CVEs. Like
+# the other shared stacks its sourceRef is source-agnostic — the
+# ${source_kind}/${source_name} placeholders are filled by the root's
+# postBuild.substituteFrom the cluster-vars ConfigMap.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: trivy
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./flux/cluster/trivy
+  prune: true
+  sourceRef:
+    kind: ${source_kind}
+    name: ${source_name}
+    namespace: flux-system
