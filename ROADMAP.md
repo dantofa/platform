@@ -1,4 +1,4 @@
-Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally postponed with a noted reason — every deferred evaluation or control loop must have an entry here per the design principles in `README.md`.
+Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally postponed with a noted reason
 
 ---
 
@@ -19,12 +19,12 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
 
 ## Infrastructure: Cluster and GitOps
 
-- [DONE] Add Zitadel admin OIDC support for authentication using Gitlab
-- [DONE] Add testing for tenant Zitadel organizations
-- [DONE] Configure DOKS cluster backups
-  - [DONE] CloudNativePG WAL archiving + daily base backups to DigitalOcean Spaces bucket `dantofa-postgres-backups` (nyc3)
-  - [DONE] Velero daily cluster-object backup to DigitalOcean Spaces bucket `dantofa-velero-backups` (nyc3); excludes PVC data (CNPG owns that)
-- [DONE] Configure cluster metrics, logging and observability using Grafana Stack
+- Add Zitadel admin OIDC support for authentication using Gitlab
+- Add testing for tenant Zitadel organizations
+- Configure DOKS cluster backups
+  - CloudNativePG WAL archiving + daily base backups to DigitalOcean Spaces bucket `dantofa-postgres-backups` (nyc3)
+  - Velero daily cluster-object backup to DigitalOcean Spaces bucket `dantofa-velero-backups` (nyc3); excludes PVC data (CNPG owns that)
+- Configure cluster metrics, logging and observability using Grafana Stack
 
 ---
 

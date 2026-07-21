@@ -38,7 +38,7 @@ cloudflare-acl:
   #!/usr/bin/env bash
   set -euo pipefail
   file=flux/ingress/traefik/release.yaml
-  block="$(curl -fsS https://www.cloudflare.com/ips-v4 | sort -V | sed 's/^/        - /')"
+  block="$(curl -fsS https://www.cloudflare.com/ips-v4 | sort -V | sed 's/^/          - /')"
   awk -v block="$block" '
     /# BEGIN cloudflare-ipv4/ { print; print block; skip=1; next }
     /# END cloudflare-ipv4/   { skip=0 }
