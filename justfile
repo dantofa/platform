@@ -292,6 +292,58 @@ verify-backup:
     exit 1
   fi
 
+# Backup + restore drill: prove a backup can actually be RESTORED, not just taken
+# (an untested backup is not a backup). Seeds a throwaway namespace, backs it up,
+# deletes it to simulate loss, restores from the backup, and asserts the seeded
+# marker returns. Run after verify-backup (which waits for Velero + an Available
+# BackupStorageLocation). Fully-qualified resource.group on `backups`/`restores`
+# because CloudNativePG also defines a `Backup` CRD (the short name is ambiguous).
+verify-restore:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  ns=velero
+  drill=velero-restore-drill
+  kubectl -n "$ns" wait --for=jsonpath='{.status.phase}'=Available \
+    backupstoragelocation/default --timeout=300s
+  # Seed a throwaway namespace with a marker to back up and later assert on.
+  kubectl create namespace "$drill" --dry-run=client -o yaml | kubectl apply -f -
+  canary="restored-$(date +%s)"
+  kubectl -n "$drill" create configmap restore-marker \
+    --from-literal=canary="$canary" --dry-run=client -o yaml | kubectl apply -f -
+  # Back up the drill namespace.
+  backup="restore-drill-$(date +%s)"
+  echo "Backing up namespace $drill as $backup..."
+  velero backup create "$backup" --namespace "$ns" --include-namespaces "$drill" --wait || true
+  bphase="$(kubectl -n "$ns" get backups.velero.io "$backup" -o jsonpath='{.status.phase}')"
+  echo "Backup $backup phase: $bphase"
+  if [ "$bphase" != "Completed" ]; then
+    velero backup describe "$backup" --namespace "$ns" --details || true
+    kubectl -n "$ns" logs deploy/velero --tail=200 || true
+    kubectl delete namespace "$drill" --ignore-not-found >/dev/null 2>&1 || true
+    exit 1
+  fi
+  # Simulate loss, then restore from the backup.
+  echo "Deleting namespace $drill to simulate loss..."
+  kubectl delete namespace "$drill" --wait --timeout=180s
+  restore="restore-drill-$(date +%s)"
+  echo "Restoring from $backup as $restore..."
+  velero restore create "$restore" --namespace "$ns" --from-backup "$backup" --wait || true
+  rphase="$(kubectl -n "$ns" get restores.velero.io "$restore" -o jsonpath='{.status.phase}')"
+  echo "Restore $restore phase: $rphase"
+  if [ "$rphase" != "Completed" ]; then
+    velero restore describe "$restore" --namespace "$ns" --details || true
+    kubectl -n "$ns" logs deploy/velero --tail=200 || true
+    kubectl delete namespace "$drill" --ignore-not-found >/dev/null 2>&1 || true
+    exit 1
+  fi
+  # Assert the seeded resource came back with its value.
+  got="$(kubectl -n "$drill" get configmap restore-marker -o jsonpath='{.data.canary}' 2>/dev/null || true)"
+  kubectl delete namespace "$drill" --ignore-not-found >/dev/null 2>&1 || true
+  if [ "$got" != "$canary" ]; then
+    echo "restore drill FAILED: marker not restored (got '$got', want '$canary')"; exit 1
+  fi
+  echo "restore drill OK: $drill restored from $backup with marker intact"
+
 # Snapshot cluster + Flux state into ./preview-diagnostics for CI to upload as
 # artifacts on a failed preview run (the cluster is destroyed afterwards, so
 # this is the only surviving record). Everything is best-effort: a partial

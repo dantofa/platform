@@ -1,0 +1,189 @@
+---
+# Velero backup + restore cycle. Bootstraps a cluster from the PR branch, proves
+# a backup completes AND that it can be RESTORED (an untested backup is not a
+# backup): seed a namespace, back it up, delete it, restore, assert it returns.
+# Ported out of `preview` (which no longer runs the backup check).
+#
+# Runs on every PR (no `paths:` filter) so the `velero` gate always reports a
+# status -- a path-filtered required check stalls PRs forever. The expensive
+# `backup` job is skipped internally unless the Velero manifests change
+# (flux/cluster/velero.yaml, flux/cluster/velero/**). Make the `velero` job the
+# required status check.
+name: velero
+on:
+  pull_request:
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  CLUSTER_NAME: platform-velero-${{ github.event.pull_request.number }}
+  BASE_DOMAIN: velero.dantofa.dev
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      velero: ${{ steps.filter.outputs.velero }}
+    steps:
+      - name: Detect Velero manifest changes
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          files="$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')"
+          if printf '%s\n' "$files" | grep -qE '^flux/cluster/velero(\.yaml$|/)'; then
+            echo "velero=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "velero=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  backup:
+    needs: detect
+    if: needs.detect.outputs.velero == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: preview
+    permissions:
+      contents: read
+    env:
+      KUBECONFIG: .kubeconfig
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'go.sum', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      - name: Destroy velero cluster
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
+
+      - name: Create velero cluster
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster create --name "$CLUSTER_NAME" --wait
+
+      - name: Tag velero cluster
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster update "$CLUSTER_NAME" --tag ci-velero
+
+      - name: Fetch velero kubeconfig
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: |
+          nix develop --command bws run --project-id ${{ vars.BWS_PROJECT_ID }} -- nix run .#default -- digitalocean cluster connect "$CLUSTER_NAME" --output .kubeconfig
+          test -s .kubeconfig
+
+      # Bootstrap the PR's manifests (links a Spaces backup bucket + installs the
+      # velero stack pointed at this PR's branch).
+      - name: Bootstrap the backup stack
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
+          BWS_PROJECT_ID: ${{ vars.BWS_PROJECT_ID }}
+          BWS_ORGANIZATION_ID: ${{ vars.BWS_ORGANIZATION_ID }}
+        # bws run strips BWS_ACCESS_TOKEN from the child, so pass it on the flag.
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME"
+          --source-type git --source-revision "$HEAD_REF" --base-domain "$BASE_DOMAIN"
+          --tls-issuer selfsigned
+          --bitwarden-token "$BWS_ACCESS_TOKEN"
+
+      # Backup: waits for Velero + an Available BackupStorageLocation, then proves
+      # a backup completes.
+      - name: Verify backup
+        run: nix develop --command just verify-backup
+
+      # Restore: back up a throwaway namespace, delete it, restore, assert
+      # it returns.
+      - name: Verify restore
+        run: nix develop --command just verify-restore
+
+      - name: Tear down backup bucket
+        if: always()
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean space unlink "$CLUSTER_NAME-backup" || true
+
+      - name: Capture failure diagnostics
+        if: failure()
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: |
+          mkdir -p preview-diagnostics
+          nix develop --command bws run --project-id ${{ vars.BWS_PROJECT_ID }} -- \
+            nix run .#default -- digitalocean cluster list \
+            >preview-diagnostics/digitalocean-clusters.txt 2>&1 || true
+          nix develop --command just capture-diagnostics || true
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: velero-diagnostics-${{ github.event.pull_request.number }}
+          path: preview-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Destroy velero cluster
+        if: always()
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
+
+  # Always-running gate = the required status check (see the header comment).
+  velero:
+    needs: [detect, backup]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Gate on the backup/restore test
+        env:
+          DETECT_RESULT: ${{ needs.detect.result }}
+          BACKUP_RESULT: ${{ needs.backup.result }}
+          VELERO_CHANGED: ${{ needs.detect.outputs.velero }}
+        run: |
+          if [ "$DETECT_RESULT" != "success" ]; then
+            echo "change detection failed (result=$DETECT_RESULT)"; exit 1
+          fi
+          case "$BACKUP_RESULT" in
+            success|skipped)
+              echo "velero gate OK (backup=$BACKUP_RESULT, velero-changed=$VELERO_CHANGED)" ;;
+            *)
+              echo "backup/restore test did not pass (result=$BACKUP_RESULT)"; exit 1 ;;
+          esac
