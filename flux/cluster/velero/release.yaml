@@ -36,10 +36,29 @@ spec:
             name: plugins
     credentials:
       existingSecret: backup-credential
-    # Spaces is object storage only: no volume snapshots, no node agent.
+    # No CSI volume snapshots (Spaces is object storage). Instead the node-agent
+    # backs up volume DATA via file-system backup into the same Spaces bucket --
+    # self-contained, portable DR that protects any volume a downstream cluster
+    # provisions, and reuses the node-agent a later CSI snapshot-data-movement
+    # upgrade would build on. Operator-owned volumes (e.g. CloudNativePG) must opt
+    # OUT of fsBackup via a `backup.velero.io/backup-volumes-excludes` pod
+    # annotation (or `velero.io/exclude-from-backup` on the PVC), set in the
+    # operator's CR -- they own their own volume backups.
     snapshotsEnabled: false
-    deployNodeAgent: false
+    deployNodeAgent: true
+    nodeAgent:
+      # Bound the DaemonSet's footprint (it runs on every node).
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
     configuration:
+      # Opt-out model: every pod volume is fs-backed-up unless annotated to skip
+      # (see above). Without this, fsBackup would need a per-pod opt-in annotation.
+      defaultVolumesToFsBackup: true
       backupStorageLocation:
         - name: default
           provider: aws

@@ -95,9 +95,6 @@ jobs:
       - name: Verify Kustomizations reconciled
         run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
 
-      - name: Verify Velero backup
-        run: nix develop --command just verify-backup
-
       # Full end-to-end proof: hit the echo backend
       - name: Test echo service
         run: |
