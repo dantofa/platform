@@ -118,9 +118,14 @@ and pre-commit pick it up automatically.
   manifests (`HelmRelease` chart versions + the Velero plugin image via the `flux`
   manager, and the SeaweedFS `Seaweed` CRD image via a `customManagers` regex).
   A Renovate gomod PR changes `go.sum`, so the flake's `vendorHash` must be
-  recomputed on it — Renovate cannot do that itself. Run **`just vendor-hash`** on
-  the PR branch (it blanks the hash, reads the one `nix build` reports, and writes
-  it back).
+  recomputed on it — Renovate cannot do that itself. The **`vendor-hash` workflow**
+  (`.github/workflows/vendor-hash.yml`) does it automatically: on a Renovate PR
+  touching `go.mod`/`go.sum` it runs `just vendor-hash` and pushes the result back
+  to the PR branch. That push uses the `ACTIONS_TOKEN` secret (a
+  contents:write fine-grained PAT or GitHub App token), not `GITHUB_TOKEN`, because
+  the strict ruleset must re-run `lint`/`test` on the new commit and `GITHUB_TOKEN`
+  pushes don't re-trigger workflows. Run `just vendor-hash` by hand only for a
+  non-Renovate `go.sum` change.
 - **`just update` is the manual path for what Renovate does not own**: `go get -u
   ./…` + `go mod tidy`, then `nix flake update` (the flake tracks `nixos-unstable`,
   a rolling branch with no versions to PR, so it stays manual). It runs
