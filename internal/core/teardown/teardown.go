@@ -69,6 +69,9 @@ type Result struct {
 	Drained                 bool     `json:"drained"`
 	StoppedTunnelWorkloads  int      `json:"stopped_tunnel_workloads,omitempty"`
 	TunnelDeleted           bool     `json:"tunnel_deleted,omitempty"`
+	// Skipped is set when the cluster has no ingress stack (no cloudflare-api
+	// secret), so there was nothing to tear down.
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // Teardown runs the graceful drain. It is a no-op success when the cluster has no

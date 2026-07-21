@@ -117,6 +117,32 @@ jobs:
           echo "e2e FAILED: ${url} did not serve echo within $((retries * sleep))s"
           exit 1
 
+      # Prove the LoadBalancer firewall (loadBalancerSourceRanges): the origin must
+      # be reachable ONLY through Cloudflare. A direct connection to the LB IP from
+      # this runner (not a Cloudflare IP) must be dropped by the DO firewall, i.e.
+      # time out (curl rc 28) or be refused (7). Any completed connection means the
+      # allowlist is not enforced. Retries to absorb firewall-rule propagation.
+      - name: Verify direct origin access is blocked
+        run: |
+          lb_ip="$(nix develop --command kubectl --kubeconfig .kubeconfig -n traefik \
+            get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+          test -n "$lb_ip" || { echo "no LoadBalancer IP on the traefik service"; exit 1; }
+          echo "Probing origin ${lb_ip}:443 directly (expecting the firewall to drop it)..."
+          for i in $(seq 1 6); do
+            rc=0
+            curl --connect-timeout 10 --max-time 15 -sS -o /dev/null "https://${lb_ip}" || rc=$?
+            case "$rc" in
+              28|7)
+                echo "OK: direct origin access blocked (curl rc=${rc})"
+                exit 0
+                ;;
+            esac
+            echo "attempt ${i}/6: still reachable (rc=${rc}); firewall may be propagating, retrying in 10s..."
+            sleep 10
+          done
+          echo "FAILED: origin LB ${lb_ip} reachable directly; Cloudflare-only allowlist not enforced"
+          exit 1
+
       # Teardown of the bucket + scoped key the bootstrap created (a completed
       # backup leaves objects, so a plain `space delete` would not suffice).
       - name: Tear down backup bucket

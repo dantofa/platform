@@ -2,7 +2,6 @@ package teardown
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -47,7 +46,10 @@ type ClusterReader interface {
 
 // ResolveCloudflareToken returns the Cloudflare API token from the in-cluster
 // cloudflare-api secret (the same one ESO syncs for the ingress controller), so
-// teardown reuses the cluster's own scoped credential rather than a flag.
+// teardown reuses the cluster's own scoped credential rather than a flag. Returns
+// "" (no error) when no cloudflare-api secret exists: the ingress stack was never
+// bootstrapped, so nothing was provisioned in Cloudflare and there is nothing to
+// tear down (a partially-created or leftover cluster is still safely deletable).
 func ResolveCloudflareToken(ctx context.Context, r ClusterReader) (string, error) {
 	for _, loc := range CloudflareSecretLocations {
 		v, err := r.SecretValue(ctx, loc.Namespace, loc.Name, cloudflareTokenKey)
@@ -58,8 +60,7 @@ func ResolveCloudflareToken(ctx context.Context, r ClusterReader) (string, error
 			return v, nil
 		}
 	}
-	return "", errors.New("no cloudflare-api token found in the cluster (looked in the " +
-		"external-dns and cloudflare-tunnel-system namespaces); is the ingress stack bootstrapped?")
+	return "", nil
 }
 
 // ResolveZone returns the cluster's Cloudflare zone apex from the cluster-vars
@@ -121,6 +122,12 @@ func Run(ctx context.Context, r ClusterReader, k KubeAPI, newCF func(token strin
 	token, err := ResolveCloudflareToken(ctx, r)
 	if err != nil {
 		return Result{}, err
+	}
+	if token == "" {
+		// No cloudflare-api secret: the ingress stack was never bootstrapped, so
+		// nothing was provisioned in Cloudflare to reap. Skip so a leftover or
+		// partially-created cluster is deletable without --force.
+		return Result{Skipped: true}, nil
 	}
 	zone, err := ResolveZone(ctx, r)
 	if err != nil {
