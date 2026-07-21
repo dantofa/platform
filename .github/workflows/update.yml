@@ -1,0 +1,213 @@
+---
+# Upgrade-safety gate: proves a PR's manifest changes apply cleanly to an
+# ALREADY-RUNNING cluster, not just a fresh one. `preview` bootstraps a new
+# cluster from the PR branch (fresh convergence); this bootstraps on `master`
+# (the state running clusters are in), then repoints Flux at the PR HEAD and
+# re-verifies -- catching immutable-field changes, `prune: true` deletions, and
+# CRD/chart upgrade breakage that only surface on a transition. Because
+# production/downstream clusters track the published manifests, a bad merge would
+# reach them ungated; this is the gate.
+#
+# Runs on every PR (no `paths:` filter) so the `update` gate always reports a
+# status -- required checks that are path-filtered stall PRs forever. The
+# expensive `upgrade` job is instead skipped internally when flux/** is untouched
+# (only manifests can break a manifest upgrade). Make the `update` job the
+# required status check.
+name: update
+on:
+  pull_request:
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  CLUSTER_NAME: platform-update-${{ github.event.pull_request.number }}
+  BASE_DOMAIN: update.dantofa.dev
+jobs:
+  # Does this PR touch the reconciled manifests? Only those can break an upgrade.
+  detect:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      flux: ${{ steps.filter.outputs.flux }}
+    steps:
+      - name: Detect flux/** changes
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          files="$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')"
+          if printf '%s\n' "$files" | grep -q '^flux/'; then
+            echo "flux=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "flux=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The expensive two-phase upgrade test; only runs when manifests changed.
+  upgrade:
+    needs: detect
+    if: needs.detect.outputs.flux == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: preview
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'go.sum', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      - name: Destroy update cluster
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
+
+      - name: Create update cluster
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster create --name "$CLUSTER_NAME" --wait
+
+      - name: Tag update cluster
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster update "$CLUSTER_NAME" --tag ci-update
+
+      - name: Fetch update kubeconfig
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: |
+          nix develop --command bws run --project-id ${{ vars.BWS_PROJECT_ID }} -- nix run .#default -- digitalocean cluster connect "$CLUSTER_NAME" --output .kubeconfig
+          test -s .kubeconfig
+
+      # Phase 1: bootstrap on master -- the state a running cluster is already in.
+      - name: Bootstrap on master
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          BWS_PROJECT_ID: ${{ vars.BWS_PROJECT_ID }}
+          BWS_ORGANIZATION_ID: ${{ vars.BWS_ORGANIZATION_ID }}
+        # bws run strips BWS_ACCESS_TOKEN from the child, so pass it on the flag.
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster bootstrap "$CLUSTER_NAME"
+          --source-type git --source-revision master --base-domain "$BASE_DOMAIN"
+          --tls-issuer selfsigned
+          --bitwarden-token "$BWS_ACCESS_TOKEN"
+
+      - name: Verify the master baseline converges
+        run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
+
+      # Phase 2: repoint Flux from master to this PR's HEAD and force the source to
+      # re-fetch. The source-revision change triggers every dependent Kustomization
+      # to re-reconcile against the PR manifests -- the actual upgrade transition.
+      - name: Upgrade to the PR revision
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          KUBECONFIG: .kubeconfig
+        run: |
+          nix run .#default -- flux source create platform --type git \
+            --url https://github.com/dantofa/platform --revision "$HEAD_REF" --kubeconfig "$KUBECONFIG"
+          # Block until source-controller has the PR revision (this fires the
+          # re-reconcile of every dependent Kustomization); then let them enter
+          # reconciliation before the verify below gates on their result.
+          nix develop --command flux reconcile source git platform -n flux-system
+          sleep 30
+
+      # The gate: the PR's manifests must reconcile as an upgrade over master.
+      # A failure here is an immutable-field/prune/CRD-upgrade break that a
+      # fresh-cluster test (preview) would not catch.
+      - name: Verify the PR upgrade converges
+        run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
+
+      # Teardown of the bucket + scoped key bootstrap created.
+      - name: Tear down backup bucket
+        if: always()
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean space unlink "$CLUSTER_NAME-backup" || true
+
+      # On failure, snapshot state before the teardown destroys the cluster.
+      - name: Capture failure diagnostics
+        if: failure()
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          KUBECONFIG: .kubeconfig
+        run: |
+          mkdir -p preview-diagnostics
+          nix develop --command bws run --project-id ${{ vars.BWS_PROJECT_ID }} -- \
+            nix run .#default -- digitalocean cluster list \
+            >preview-diagnostics/digitalocean-clusters.txt 2>&1 || true
+          nix develop --command just capture-diagnostics || true
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: update-diagnostics-${{ github.event.pull_request.number }}
+          path: preview-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # always(): a failed run still provisioned a billable cluster.
+      - name: Destroy update cluster
+        if: always()
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
+
+  # Always-running gate = the required status check. Passes when the upgrade
+  # verification succeeded OR was legitimately skipped (no manifest change);
+  # fails if it failed/was cancelled, or if change detection itself failed. This
+  # is what a path-filtered required check cannot do (it would stall forever).
+  update:
+    needs: [detect, upgrade]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Gate on the upgrade verification
+        env:
+          DETECT_RESULT: ${{ needs.detect.result }}
+          UPGRADE_RESULT: ${{ needs.upgrade.result }}
+          FLUX_CHANGED: ${{ needs.detect.outputs.flux }}
+        run: |
+          if [ "$DETECT_RESULT" != "success" ]; then
+            echo "change detection failed (result=$DETECT_RESULT)"; exit 1
+          fi
+          case "$UPGRADE_RESULT" in
+            success|skipped)
+              echo "upgrade gate OK (upgrade=$UPGRADE_RESULT, flux-changed=$FLUX_CHANGED)" ;;
+            *)
+              echo "upgrade verification did not pass (result=$UPGRADE_RESULT)"; exit 1 ;;
+          esac

@@ -21,10 +21,6 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
 
 - Add Zitadel admin OIDC support for authentication using Gitlab
 - Add testing for tenant Zitadel organizations
-- Configure DOKS cluster backups
-  - CloudNativePG WAL archiving + daily base backups to DigitalOcean Spaces bucket `dantofa-postgres-backups` (nyc3)
-  - Velero daily cluster-object backup to DigitalOcean Spaces bucket `dantofa-velero-backups` (nyc3); excludes PVC data (CNPG owns that)
-- Configure cluster metrics, logging and observability using Grafana Stack
 
 ---
 
@@ -37,6 +33,9 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
 - Update Alpine OpenSSL base image in trivy-operator and Zitadel charts once CVE-2026-31789 patches are released; remove entry from `.trivyignore-cluster`
 - Update CloudNativePG postgres image once CVE-2026-33845 / CVE-2026-42010 (libgnutls30t64) patches are available; remove entries from `.trivyignore-cluster` (cpc-bridge-proxy entry cannot be removed — unmanaged DOKS infra)
 - Update Zitadel chart once CVE-2026-41242 (protobufjs) is patched upstream; remove entry from `.trivyignore-cluster`
+- Broaden automated secret rotation beyond Zitadel to the platform's own credentials: the Bitwarden machine-account token (ESO secret-zero), the DigitalOcean API token, and the Cloudflare API token
+- Configure Cloudflare edge security to complement the origin IP allowlist: WAF managed rules, rate limiting, and bot management
+- Establish the platform's own compliance/audit posture (we sell ISO compliance): periodic access reviews, immutable audit logging for admin/operator actions, and a documented data-handling and retention policy
 
 ---
 
@@ -193,11 +192,3 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
   - Audit log: every query and response logged with full attribution (user ID, session ID, tenant ID) — immutable append-only store
 - Conduct security review of tenant operator RBAC
   - Operator currently has cluster-wide access to create namespaces and secrets; audit and tighten to minimum required permissions
-
----
-
-## Infrastructure: Future Compatibility
-
-- Add compatibility for provisioning on GKE and EKS
-  - Abstract cloud-provider-specific steps (cluster creation, `doctl` calls) behind justfile targets with a provider parameter
-  - Document provider-specific required parameters and known differences

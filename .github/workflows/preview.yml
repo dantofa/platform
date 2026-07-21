@@ -5,7 +5,7 @@ on:
 permissions: {}
 env:
   FORCE_COLOR: ""
-  CLUSTER_NAME: saas-preview-${{ github.event.pull_request.number }}
+  CLUSTER_NAME: platform-preview-${{ github.event.pull_request.number }}
   BASE_DOMAIN: preview.dantofa.dev
 jobs:
   preview:
