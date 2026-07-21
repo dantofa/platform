@@ -1,0 +1,62 @@
+---
+name: vendor-hash
+# Recompute the flake vendorHash on Renovate gomod PRs. Renovate changes go.sum
+# but cannot recompute the Nix hash itself, so without this the flake stops
+# building once the PR merges. This runs `just vendor-hash` and pushes the result
+# back to the PR branch.
+#
+# The push must use ACTIONS_TOKEN (a fine-grained PAT with contents:write, or
+# a GitHub App installation token) -- not the default GITHUB_TOKEN, whose pushes
+# do not re-trigger the required lint/test checks on the new commit, which the
+# strict ruleset needs before the PR can merge.
+on:
+  pull_request:
+    paths: [go.mod, go.sum]
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  NO_COLOR: "1"
+jobs:
+  vendor-hash:
+    # Only Renovate's gomod PRs; a human changing go.mod runs `just vendor-hash`
+    # locally (pushing to their branch unprompted would be surprising).
+    if: github.actor == 'renovate[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read # the push authenticates with ACTIONS_TOKEN, not GITHUB_TOKEN
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.ACTIONS_TOKEN }}
+          persist-credentials: true # keep the token so the push below can re-trigger checks
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'go.sum', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      - name: Recompute vendorHash
+        run: nix develop --command just vendor-hash
+
+      - name: Commit and push if changed
+        run: |
+          if git diff --quiet -- flake.nix; then
+            echo "vendorHash already correct; nothing to push."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add flake.nix
+          git commit -m "Recompute flake vendorHash for go.sum update"
+          git push
