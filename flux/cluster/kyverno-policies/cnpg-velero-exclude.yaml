@@ -1,0 +1,83 @@
+---
+# Keep CloudNativePG's own objects out of Velero's backups entirely.
+#
+# The Velero stack runs `defaultVolumesToFsBackup: true` with a daily all-namespace
+# schedule, so every pod volume is backed up unless it opts out. For a Postgres
+# instance that default is actively harmful: the node-agent copies a live data
+# directory, producing a large, slow, crash-inconsistent artifact that looks like a
+# database backup and is not one. CNPG owns database recovery through its own WAL
+# archiving and base backups (PITR); Velero owns the cluster objects around it.
+#
+# Excluding the OBJECTS rather than listing their volumes is deliberate. Both halves
+# of that were measured on a local cluster, and both cut the same way:
+#
+#   - A volume-name exclusion can never be complete. A `Cluster` that declares
+#     `tablespaces:` mounts an extra `tbs-<name>` volume whose name the downstream
+#     chooses, so no fixed list covers it: Velero selected exactly that volume for
+#     file-system backup ("has volumes to backup: [tbs-reporting]") while the four
+#     default volumes were correctly skipped.
+#
+#   - Backing the objects up is worse than useless. Velero cannot capture the volume
+#     CONTENTS -- that is the point -- but it does restore the PVC objects with CNPG's
+#     `cnpg.io/pvcStatus: ready` annotation intact. The operator reads that as an
+#     initialized PGDATA, starts an instance against an empty directory, and the pod
+#     crash-loops ("unable to move `pg_wal` directory to the attached volume") with the
+#     Cluster stuck in "Waiting for the instances to become active". It never
+#     self-heals: CNPG will not re-initialize a volume it believes has data. A restore
+#     that silently produces a permanently broken database is worse than one that
+#     produces no database at all.
+#
+# So the instance pods, the CNPG-owned PVCs and the `Cluster` CR are excluded, and a
+# namespace restore brings back everything AROUND the database -- Services, the CA and
+# server certificates, the application credentials Secret -- while the database comes
+# back the only way it can: Flux re-applies the `Cluster` and CNPG recovers from its
+# own WAL archive.
+#
+# Scoped by KIND, not by the `cnpg.io/cluster` label alone: the application
+# credentials Secret carries that label too, and it is exactly what a restore should
+# bring back.
+#
+# The `+()` anchor adds the label only when absent, so a downstream that deliberately
+# sets its own value keeps it. Unlike the tenant-scoped policies alongside it, this one
+# is not namespace-scoped: a CNPG instance is the same hazard wherever it runs. The
+# `Cluster` rule names a CRD this stack itself installs -- on a fresh bootstrap Kyverno
+# may see the policy first and log "unable to convert GVK to GVR"; the policy still
+# reports Ready and Kyverno rebuilds its webhooks once the CRD appears.
+#
+# background is off: these are mutate-on-admission rules with no `mutateExisting`
+# targets, so background processing would do nothing. The reports-controller still
+# wants read access to the matched `Cluster` kind -- see kyverno-cnpg-rbac.yaml.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: cnpg-exclude-from-velero-backup
+spec:
+  background: false
+  rules:
+    - name: exclude-instance-pods-and-pvcs
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+                - PersistentVolumeClaim
+              selector:
+                matchExpressions:
+                  - key: cnpg.io/cluster
+                    operator: Exists
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(velero.io/exclude-from-backup): "true"
+    - name: exclude-cluster-cr
+      match:
+        any:
+          - resources:
+              kinds:
+                - postgresql.cnpg.io/v1/Cluster
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(velero.io/exclude-from-backup): "true"

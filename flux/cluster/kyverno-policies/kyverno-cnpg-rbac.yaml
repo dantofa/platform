@@ -1,0 +1,25 @@
+---
+# RBAC for the `Cluster` rule in cnpg-velero-exclude.yaml.
+#
+# Kyverno's reports-controller wants get/list/watch on every kind a policy matches,
+# and it has no standing permission on CRDs installed after it. Without this,
+# applying that policy returns a warning on every reconcile:
+#
+#   system:serviceaccount:kyverno-system:kyverno-reports-controller requires
+#   permissions get,list,watch for resource postgresql.cnpg.io/v1/Cluster
+#
+# The policy works regardless -- admission mutation needs no RBAC on the matched kind,
+# and it was verified mutating `Cluster` CRs before this role existed -- but the
+# warning is real, and the aggregation label below is Kyverno's documented fix.
+# Reports-controller only: that is the controller that asks for it, and the rules are
+# mutate-on-admission, so the background-controller has nothing to do here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno:cnpg-clusters
+  labels:
+    rbac.kyverno.io/aggregate-to-reports-controller: "true"
+rules:
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters"]
+    verbs: ["get", "list", "watch"]

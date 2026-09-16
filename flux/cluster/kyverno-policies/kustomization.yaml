@@ -5,4 +5,5 @@ resources:
   - pod-security.yaml
   - require-resources.yaml
   - disallow-latest-tag.yaml
-  - cnpg-fs-backup-exclude.yaml
+  - cnpg-velero-exclude.yaml
+  - kyverno-cnpg-rbac.yaml
