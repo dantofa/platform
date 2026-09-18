@@ -5,7 +5,7 @@ DigitalOcean and local Kubernetes clusters and components.
 
 It deploys a fixed platform toolset via Flux:
 
-- **Base components:** cert-manager, External Secrets Operator, Velero, Kyverno, Trivy Operator.
+- **Base components:** cert-manager, External Secrets Operator, Velero, Kyverno, Trivy Operator, CloudNativePG operator (the operator only — declare your own Postgres `Cluster`).
 - **Governance:** baseline Kyverno policies (`flux/cluster/kyverno-policies/`) enforce restricted Pod Security, required resource requests/limits, and no `:latest` on any namespace labelled `dantofa.dev/tenant` — the opt-in an app takes via the `tenant-namespace/` onboarding template (namespace + quota + limits + isolation NetworkPolicy). Platform components are unaffected (unlabelled).
 - **Metrics, log & trace collection (all clusters):** Grafana Alloy + node-exporter + kube-state-metrics (k8s-monitoring) and the prometheus-operator CRDs — scraping to an always-on local Prometheus store, tailing pod logs to an always-on local Loki store, and receiving app OTLP traces into an always-on local Tempo store (all short retention). A cost-exporter publishes the cluster's DO price constants (node/storage/LB/transfer, priced from the DO Sizes API at bootstrap) as `dantofa_*` metrics for a central cost dashboard.
 - **DOKS:** Cloudflare Tunnel controller by default (outbound-only, no LoadBalancer); with `--dolb`, Traefik + external-dns behind a DO LoadBalancer instead.

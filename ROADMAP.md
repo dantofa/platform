@@ -31,7 +31,6 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
   - Target: automated rotation on a configurable schedule or on PAT expiry detection via the drift timer
 - Update grpc dependency across Flux, cloudflare-tunnel-ingress-controller, and trivy-operator charts once CVE-2026-33186 patches are released; remove entry from `.trivyignore-cluster`
 - Update Alpine OpenSSL base image in trivy-operator and Zitadel charts once CVE-2026-31789 patches are released; remove entry from `.trivyignore-cluster`
-- Update CloudNativePG postgres image once CVE-2026-33845 / CVE-2026-42010 (libgnutls30t64) patches are available; remove entries from `.trivyignore-cluster` (cpc-bridge-proxy entry cannot be removed — unmanaged DOKS infra)
 - Update Zitadel chart once CVE-2026-41242 (protobufjs) is patched upstream; remove entry from `.trivyignore-cluster`
 - Update the external-secrets bitwarden-sdk-server image once CVE-2025-68121 (Go stdlib) is patched upstream; remove entry from `.trivyignore-cluster` (the only CRITICAL currently suppressed by the preview image-security gate)
 - Broaden automated secret rotation beyond Zitadel to the platform's own credentials: the Bitwarden machine-account token (ESO secret-zero), the DigitalOcean API token, and the Cloudflare API token

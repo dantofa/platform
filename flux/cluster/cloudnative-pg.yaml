@@ -1,0 +1,29 @@
+---
+# The CloudNativePG operator, a shared stack the `cluster` reconcile root loads on
+# every cluster type: it reconciles PostgreSQL `Cluster` CRs. The platform ships
+# the OPERATOR ONLY — no `Cluster` CRs — the same split the base stack already
+# makes for prometheus-operator (platform ships the CRDs, downstream declares its
+# ServiceMonitor). A downstream that needs Postgres declares its own `Cluster` in
+# its own reconcile root.
+#
+# It is unconditional rather than opt-in because CNPG installs cluster-scoped
+# CRDs: two consumers each installing their own operator collide on a shared
+# cluster, and an opt-in operator that downstreams depend on just moves the
+# ownership problem to whichever product ships first.
+#
+# Like the other shared stacks its sourceRef is source-agnostic — the
+# ${source_kind}/${source_name} placeholders are filled by the root's
+# postBuild.substituteFrom the cluster-vars ConfigMap.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cloudnative-pg
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./flux/cluster/cloudnative-pg
+  prune: true
+  sourceRef:
+    kind: ${source_kind}
+    name: ${source_name}
+    namespace: flux-system

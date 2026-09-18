@@ -25,7 +25,8 @@ your task to a section, follow the convention, reuse the primitive.
 - **Base stacks on every cluster**: cert-manager, External Secrets Operator (ESO),
   Velero (cluster backups), Kyverno (+ baseline governance policies), Trivy (image CVE
   scanning + gate), prometheus-operator CRDs, an always-on local Prometheus (metrics),
-  local Loki (logs), local Tempo (traces), Grafana Alloy collectors, and a cost-exporter.
+  local Loki (logs), local Tempo (traces), Grafana Alloy collectors, a cost-exporter, and
+  the CloudNativePG operator (see "Postgres").
 - **Ingress**: Cloudflare Tunnel (DOKS default) or Traefik + external-dns behind a DO
   LoadBalancer (`--dolb`); a local-only Traefik on kind, published on the host's real
   `:80`/`:443`.
@@ -343,6 +344,45 @@ drop all capabilities, seccomp `RuntimeDefault`, no host namespaces/paths), **cp
 memory requests and a memory limit** on every container, and **no `:latest`** image tag
 (use a tag or digest). Non-compliant Pods are rejected at admission — design images and
 manifests to comply.
+
+## Postgres
+
+The platform ships the **CloudNativePG operator** — the operator only. Do not install
+your own: CNPG's CRDs are cluster-scoped, so a second copy collides with everyone else's
+on a shared cluster. Declare your own `Cluster` CR in your own reconcile root, the same
+split as prometheus-operator (platform ships the CRDs, you ship the `ServiceMonitor`).
+
+**Your database is not in the Velero backup, and that is enforced.** The
+`cnpg-exclude-from-velero-backup` Kyverno policy labels your `Cluster` CR, its instance
+pods and its PVCs `velero.io/exclude-from-backup`, so Velero skips them entirely. Two
+reasons, both measured rather than assumed:
+
+- Velero's file-system backup would otherwise copy a **live** data directory — a large,
+  crash-inconsistent artifact that looks like a database backup and is not one.
+- Restoring those objects is worse than not having them. Velero cannot capture the volume
+  contents, but it *can* restore a PVC object with CNPG's `cnpg.io/pvcStatus: ready`
+  annotation intact. The operator then reads an empty volume as an initialized PGDATA,
+  starts an instance against it, and the pod crash-loops forever (`unable to move 'pg_wal'
+  directory to the attached volume`) with the `Cluster` stuck in *Waiting for the instances
+  to become active*. It never self-heals.
+
+**What a namespace restore gives you** is everything around the database: your app, its
+Services, and the CNPG-generated Secrets — the CA, the server certificate and the
+application credentials — so connection strings and client trust survive unchanged. The
+database itself is simply absent. Bring it back by letting Flux re-apply your `Cluster`
+with a `bootstrap.recovery` stanza pointing at your own WAL archive; nothing needs to be
+deleted or untangled first.
+
+What that leaves you: **database recovery is yours**. If you need PITR, configure CNPG's
+own WAL archiving and base backups against object storage you own — the platform's
+`backup-credential` is scoped to the Velero namespace and is not yours to use. Without
+that, a destroyed cluster means a lost database, however green the Velero backups look.
+
+The exclusion is by object, not by volume name, so it covers volumes you add later —
+`walStorage`, `tablespaces:` (`tbs-<name>`) and anything a future CNPG version mounts. It
+uses Kyverno's add-if-absent anchor, so setting `velero.io/exclude-from-backup: "false"`
+yourself (on the `Cluster`, or via its `inheritedMetadata`) still wins — at which point the
+two failure modes above are yours to manage.
 
 ## Secrets
 
