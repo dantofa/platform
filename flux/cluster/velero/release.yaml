@@ -37,7 +37,7 @@ spec:
     credentials:
       existingSecret: backup-credential
     # No CSI volume snapshots (Spaces is object storage). Instead the node-agent
-    # backs up volume DATA via file-system backup into the same Spaces bucket --
+    # backs up volume DATA via file-system backup into the same Spaces bucket —
     # self-contained, portable DR that protects any volume a downstream cluster
     # provisions, and reuses the node-agent a later CSI snapshot-data-movement
     # upgrade would build on. Any future operator that manages its own volume

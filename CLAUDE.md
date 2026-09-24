@@ -101,7 +101,7 @@ password, dropped when visualization moved to Grafana Cloud — but it stays doc
 as the sanctioned pattern for disposable secrets.)
 
 **Secret-zero exceptions (planted by `dctl`, not ESO).** Two credentials cannot come
-from ESO, because ESO itself is reconciled *from* the source they unlock: the Bitwarden
+from ESO, because ESO itself is reconciled _from_ the source they unlock: the Bitwarden
 machine-account token (`ProvisionESOAccessToken`) and a **private source credential**.
 `dctl flux source create --secret-ref` points a source at a Secret created out of band
 (checked to exist first — the flux CLI does not validate the reference, it just blocks on

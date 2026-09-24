@@ -8,8 +8,8 @@
 #   system:serviceaccount:kyverno-system:kyverno-reports-controller requires
 #   permissions get,list,watch for resource postgresql.cnpg.io/v1/Cluster
 #
-# The policy works regardless -- admission mutation needs no RBAC on the matched kind,
-# and it was verified mutating `Cluster` CRs before this role existed -- but the
+# The policy works regardless — admission mutation needs no RBAC on the matched kind,
+# and it was verified mutating `Cluster` CRs before this role existed — but the
 # warning is real, and the aggregation label below is Kyverno's documented fix.
 # Reports-controller only: that is the controller that asks for it, and the rules are
 # mutate-on-admission, so the background-controller has nothing to do here.

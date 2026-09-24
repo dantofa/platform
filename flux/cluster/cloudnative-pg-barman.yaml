@@ -14,6 +14,11 @@
 # split. Pointing a database at a bucket is separate (see the DB-backup storage
 # work); this stack just makes the capability exist.
 #
+# wait is set for the same honest-convergence reason, not for a dependent — nothing
+# dependsOn this stack. Without it the Kustomization is Ready as soon as the
+# HelmRelease object is applied, so a bootstrap reports a backup capability that
+# exists on paper while the plugin Deployment is still rolling out.
+#
 # dependsOn cert-manager because the plugin secures its CNPG-I gRPC endpoint with
 # cert-manager Certificates (issued by a self-signed Issuer it creates in its own
 # namespace — it does not touch the platform's ClusterIssuers), and
@@ -27,6 +32,7 @@ spec:
   interval: 10m
   path: ./flux/cluster/cloudnative-pg-barman
   prune: true
+  wait: true
   dependsOn:
     - name: cert-manager
     - name: cloudnative-pg

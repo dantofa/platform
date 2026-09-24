@@ -3,6 +3,19 @@
 # every cluster type. Like velero.yaml its sourceRef is source-agnostic: the
 # ${source_kind}/${source_name} placeholders are filled by the root's
 # postBuild.substituteFrom the cluster-vars ConfigMap.
+#
+# wait is set, and it is load-bearing rather than cosmetic. kyverno-policies
+# `dependsOn` this stack; without wait that dependency is satisfied as soon as the
+# manifests are APPLIED, so the ClusterPolicies can land while the admission
+# controller is still starting. Kyverno registers its resource webhooks from those
+# policies, and `validate.kyverno.svc-fail` is fail-closed over every namespace but
+# kube-system and kyverno-system — so for the seconds between registration and the
+# pods serving, every write in the cluster is rejected with `connect: connection
+# refused`. That is not theoretical: it broke a bootstrap by failing cert-manager's
+# Helm post-install hook, whose remediation uninstall hit the same webhook and left
+# the release wedged in `uninstalling`, blocking cert-manager-config, eso, eso-config
+# and the cluster root (run 35305645624). Waiting for the admission controller to be
+# Ready closes the window the policies would otherwise open.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -12,6 +25,7 @@ spec:
   interval: 10m
   path: ./flux/cluster/kyverno
   prune: true
+  wait: true
   sourceRef:
     kind: ${source_kind}
     name: ${source_name}
