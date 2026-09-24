@@ -2,7 +2,7 @@
 # downstream projects, under one namespace: `just cluster <area> <action>`.
 #
 #   just cluster debug                              # snapshot cluster + Flux state
-#   just cluster verify backup|restore|image-scan   # verify platform infra
+#   just cluster verify backup|restore|db-backup|image-scan  # verify platform infra
 #   just cluster local  create|verify|delete|test   # kind cluster lifecycle
 #   just cluster local  ca                          # export the local TLS trust anchor
 #   just cluster doks   create|bootstrap|connect|delete|list  # DOKS cluster lifecycle
@@ -23,6 +23,13 @@
 #   LOCAL_CA_FILE     where `cluster local ca` writes the trust anchor (default: ./.local.pem)
 #   TRIVYIGNORE_BASE  mandatory accepted-CVE file (default: ./.trivyignore-cluster)
 #   TRIVYIGNORE_LOCAL optional extra accepted-CVE file (default: ./.trivyignore-cluster)
+#   DB_BACKUP_BUCKET / DB_BACKUP_ENDPOINT   object store for `cluster verify db-backup`
+#                     (default: the cluster's own backup-target ConfigMap)
+#   DB_BACKUP_ACCESS_KEY_ID / DB_BACKUP_SECRET_ACCESS_KEY
+#                     discrete S3 keys for the barman plugin, which cannot read
+#                     Velero's credentials-file Secret (default: the local
+#                     SeaweedFS pair -- set these on any other store)
+#   DB_DRILL_NS       throwaway namespace for the drill (default: cnpg-pitr-drill)
 
 # Dispatchers: `just cluster <area> <action>` -> `just cluster-<area>-<action>`,
 # extending the platform's existing `local {{action}}` / `github {{action}}` pattern.
@@ -149,6 +156,205 @@ cluster-verify-restore:
     echo "restore drill FAILED: marker not restored (got '$got', want '$canary')"; exit 1
   fi
   echo "restore drill OK: $drill restored from $backup with marker intact"
+
+# CNPG point-in-time-recovery drill: prove the barman-cloud plugin can archive a
+# database and bring it BACK, not merely that its controller is Running. Same
+# principle as `cluster verify restore` one layer down -- seed a marker, destroy
+# the database, recover it, assert the marker returns -- applied to the half of
+# recovery Velero deliberately does not cover: Velero owns the objects around a
+# database, CNPG owns the database itself (see the cnpg-exclude-from-velero-backup
+# policy).
+#
+# What it would catch that nothing else does: a chart bump that breaks CNPG-I
+# registration or the ObjectStore API. "Kustomization Ready" only means the plugin
+# Deployment rolled out, which is true of a plugin that archives nothing.
+#
+# Creates only throwaway resources in $DB_DRILL_NS and deletes them on the way out
+# -- the platform ships no `Cluster` CRs and this does not change that.
+#
+# Storage coordinates default to the cluster's own backup target (the backup-target
+# ConfigMap written for Velero) under a drill-specific prefix, so on kind this runs
+# against SeaweedFS with no configuration. Credentials are separate and explicit:
+# the plugin wants discrete accessKeyId/secretAccessKey, which Velero's
+# credentials-file Secret does not hold, so they come from the environment and
+# default to the local SeaweedFS pair. Point them at a real key on any other store.
+cluster-verify-db-backup:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  export KUBECONFIG="${KUBECONFIG:-.kubeconfig}"
+  ns="${DB_DRILL_NS:-cnpg-pitr-drill}"
+  store=drill-store
+  src=drill
+  restored=drill-restored
+  marker="pitr-$(date +%s)"
+  # A fresh destination prefix per run, not a fixed one. CNPG runs
+  # barman-cloud-check-wal-archive before it will enable archiving, and that check
+  # fails against a server directory that already holds another run's data -- so a
+  # fixed prefix passes once and then fails every run after it, which is a trap
+  # rather than a test. The archive is left behind under its prefix; on kind the
+  # cluster is throwaway, and on a long-lived store the prefix is a few tens of MB
+  # to drop.
+  prefix="${ns}/${marker}"
+
+  # Storage class follows the cluster (standard on kind, do-block-storage on DOKS);
+  # cluster-vars carries it already, so the drill does not need its own knob.
+  sc="${DB_DRILL_STORAGE_CLASS:-$(kubectl -n flux-system get configmap cluster-vars -o jsonpath='{.data.storage_class}')}"
+  bucket="${DB_BACKUP_BUCKET:-$(kubectl -n velero get configmap backup-target -o jsonpath='{.data.bucket}')}"
+  endpoint="${DB_BACKUP_ENDPOINT:-$(kubectl -n velero get configmap backup-target -o jsonpath='{.data.endpoint}')}"
+  # No region: SeaweedFS ignores it and the endpoint carries the rest. A store that
+  # requires one (real S3) needs it added to the Secret and referenced from
+  # s3Credentials.region.
+  key_id="${DB_BACKUP_ACCESS_KEY_ID:-localbackup}"
+  key_secret="${DB_BACKUP_SECRET_ACCESS_KEY:-localbackupsecret}"
+  : "${bucket:?no bucket: set DB_BACKUP_BUCKET or run against a cluster with a backup-target ConfigMap}"
+  echo "PITR drill: s3://${bucket}/${prefix} via ${endpoint} (storageClass ${sc})"
+
+  # The namespace is deleted on the way out either way, so a failing run has to
+  # print its post-mortem first. What breaks here is almost never visible in the
+  # kubectl error: a wrong key, an unreachable endpoint or a prefix that already
+  # holds another run's archive all surface as a Cluster condition or a line in the
+  # plugin log, while the drill just reports a timeout.
+  cleanup() {
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      echo "--- drill resources ---"
+      kubectl -n "$ns" get cluster.postgresql.cnpg.io,objectstore,backup.postgresql.cnpg.io,pods 2>&1 || true
+      echo "--- cluster conditions ---"
+      kubectl -n "$ns" get cluster.postgresql.cnpg.io -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{range .status.conditions[*]}  {.type}={.status} {.reason} {.message}{"\n"}{end}{end}' 2>&1 || true
+      echo "--- recent events ---"
+      kubectl -n "$ns" get events --sort-by=.lastTimestamp 2>&1 | tail -20 || true
+      echo "--- barman plugin log ---"
+      kubectl -n cnpg-system logs deploy/plugin-barman-cloud --tail=50 2>&1 || true
+      echo "--- instance logs ---"
+      kubectl -n "$ns" logs -l cnpg.io/podRole=instance --all-containers --tail=50 2>&1 || true
+    fi
+    kubectl delete namespace "$ns" --wait=false >/dev/null 2>&1 || true
+  }
+  trap cleanup EXIT
+
+  # The plugin and the operator must be up before anything below means anything.
+  kubectl -n cnpg-system wait --for=condition=Ready --timeout=600s helmrelease/cloudnative-pg
+  kubectl -n cnpg-system wait --for=condition=Ready --timeout=600s helmrelease/plugin-barman-cloud
+
+  kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "$ns" create secret generic drill-object-store \
+    --from-literal=ACCESS_KEY_ID="$key_id" \
+    --from-literal=ACCESS_SECRET_KEY="$key_secret" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+  # The ObjectStore is the plugin's own CRD -- the thing that proves it is
+  # registered and reconciling, not just deployed.
+  object_store="
+  apiVersion: barmancloud.cnpg.io/v1
+  kind: ObjectStore
+  metadata:
+    name: ${store}
+    namespace: ${ns}
+  spec:
+    configuration:
+      destinationPath: s3://${bucket}/${prefix}
+      endpointURL: ${endpoint}
+      s3Credentials:
+        accessKeyId:
+          name: drill-object-store
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: drill-object-store
+          key: ACCESS_SECRET_KEY
+      wal:
+        compression: gzip"
+  printf '%s\n' "$object_store" | kubectl apply -f -
+
+  source_cluster="
+  apiVersion: postgresql.cnpg.io/v1
+  kind: Cluster
+  metadata:
+    name: ${src}
+    namespace: ${ns}
+  spec:
+    instances: 1
+    storage:
+      size: 1Gi
+      storageClass: ${sc}
+    plugins:
+      - name: barman-cloud.cloudnative-pg.io
+        isWALArchiver: true
+        parameters:
+          barmanObjectName: ${store}"
+  printf '%s\n' "$source_cluster" | kubectl apply -f -
+
+  echo "Waiting for the source cluster to come up..."
+  kubectl -n "$ns" wait --for=jsonpath='{.status.phase}'='Cluster in healthy state' \
+    cluster.postgresql.cnpg.io/"$src" --timeout=600s
+  echo "Waiting for continuous archiving..."
+  kubectl -n "$ns" wait --for=condition=ContinuousArchiving \
+    cluster.postgresql.cnpg.io/"$src" --timeout=300s
+
+  # Seed, checkpoint, and force a WAL switch so a segment is actually archived
+  # rather than sitting half-written in pg_wal.
+  kubectl -n "$ns" exec "${src}-1" -c postgres -- psql -U postgres -d app -c \
+    "CREATE TABLE drill(marker text); INSERT INTO drill VALUES ('${marker}'); CHECKPOINT; SELECT pg_switch_wal();" >/dev/null
+  echo "Seeded marker ${marker}"
+
+  # A base backup through the plugin (method: plugin) -- the other half of a PITR
+  # set; WAL alone cannot restore without one.
+  base_backup="
+  apiVersion: postgresql.cnpg.io/v1
+  kind: Backup
+  metadata:
+    name: drill-base
+    namespace: ${ns}
+  spec:
+    cluster:
+      name: ${src}
+    method: plugin
+    pluginConfiguration:
+      name: barman-cloud.cloudnative-pg.io"
+  printf '%s\n' "$base_backup" | kubectl apply -f -
+  echo "Waiting for the base backup to complete..."
+  kubectl -n "$ns" wait --for=jsonpath='{.status.phase}'=completed \
+    backup.postgresql.cnpg.io/drill-base --timeout=600s
+
+  # Destroy the database: the Cluster and its volumes, the way a lost namespace
+  # would. Everything that survives from here comes out of object storage.
+  echo "Destroying the source cluster..."
+  kubectl -n "$ns" delete cluster.postgresql.cnpg.io "$src" --timeout=300s
+  kubectl -n "$ns" delete pvc --all --timeout=300s
+
+  recovered_cluster="
+  apiVersion: postgresql.cnpg.io/v1
+  kind: Cluster
+  metadata:
+    name: ${restored}
+    namespace: ${ns}
+  spec:
+    instances: 1
+    storage:
+      size: 1Gi
+      storageClass: ${sc}
+    bootstrap:
+      recovery:
+        source: ${src}
+    externalClusters:
+      - name: ${src}
+        plugin:
+          name: barman-cloud.cloudnative-pg.io
+          parameters:
+            barmanObjectName: ${store}
+            serverName: ${src}"
+  printf '%s\n' "$recovered_cluster" | kubectl apply -f -
+
+  echo "Waiting for the recovered cluster..."
+  kubectl -n "$ns" wait --for=jsonpath='{.status.phase}'='Cluster in healthy state' \
+    cluster.postgresql.cnpg.io/"$restored" --timeout=600s
+
+  got="$(kubectl -n "$ns" exec "${restored}-1" -c postgres -- \
+    psql -U postgres -d app -tAc "SELECT marker FROM drill;" | tr -d '[:space:]')"
+  if [ "$got" != "$marker" ]; then
+    echo "PITR drill FAILED: recovered database has marker '${got}', want '${marker}'" >&2
+    exit 1
+  fi
+  echo "PITR drill OK: ${marker} survived a destroy/recover cycle through the barman-cloud plugin"
 
 # Image security gate: fail if a PLATFORM image (one we deploy) carries a CRITICAL
 # vulnerability not accepted in the merged ignore list. DOKS-managed namespaces

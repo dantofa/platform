@@ -168,8 +168,12 @@ cluster it made; on billed infrastructure that belongs in an explicit workflow),
 bootstrapped more than once with different per-environment flags.
 
 Verification is **cluster-type-agnostic**: `just cluster verify health` (all nodes
-Ready + the whole GitOps tree reconciled), plus `backup|restore|image-scan` and
-`just cluster debug`, all act on whatever `$KUBECONFIG` points at. So a downstream
+Ready + the whole GitOps tree reconciled), plus `backup|restore|db-backup|image-scan`
+and `just cluster debug`, all act on whatever `$KUBECONFIG` points at. `db-backup` is
+the CNPG one: it archives a throwaway database through the barman-cloud plugin,
+destroys it, recovers it from object storage and asserts the row comes back — the
+recovery path that is yours, not Velero's. It defaults to the cluster's own backup
+target; point `DB_BACKUP_*` at your own bucket and key to run it anywhere else. So a downstream
 e2e differs between local and DOKS by only the lifecycle line — connect, then run
 the same gates.
 

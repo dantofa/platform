@@ -156,7 +156,8 @@ and pre-commit pick it up automatically.
 
 Cluster-ops recipes live in `cluster.just` (imported by the justfile) under one
 namespace — `just cluster debug` (state snapshot), `just cluster verify
-backup|restore|image-scan` (platform-infra checks), `just cluster local
+backup|restore|db-backup|image-scan` (platform-infra checks, `db-backup` being the
+CNPG archive/recover drill), `just cluster local
 create|verify|delete|test` (kind lifecycle) — via nested dispatchers that extend
 the `local {{action}}` / `github {{action}}` pattern. It is **shared with
 downstream projects**: the flake exposes it as `packages.cluster-just` (and the
