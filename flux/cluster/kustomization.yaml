@@ -17,6 +17,7 @@ resources:
   - kyverno-policies.yaml
   - trivy.yaml
   - cloudnative-pg.yaml
+  - cloudnative-pg-barman.yaml
   - prometheus-operator-crds.yaml
   - prometheus.yaml
   - loki.yaml

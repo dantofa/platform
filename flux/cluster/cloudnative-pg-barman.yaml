@@ -1,0 +1,36 @@
+---
+# The CloudNativePG barman-cloud plugin, a shared stack the `cluster` reconcile
+# root loads on every cluster type. CNPG 1.26+ moved backup support out of the
+# core operator into a CNPG-I plugin, so the operator alone can run Postgres but
+# cannot archive WAL or take base backups — there is no PITR without this.
+#
+# It ships for the same reason the operator does: the plugin installs a
+# cluster-scoped CRD (objectstores.barmancloud.cnpg.io) and a cluster-wide
+# Deployment, so two consumers each installing their own copy collide, and leaving
+# it downstream makes whichever product ships first the owner of a shared
+# dependency.
+#
+# The plugin only — no `ObjectStore` CRs, mirroring the operator's no-`Cluster`
+# split. Pointing a database at a bucket is separate (see the DB-backup storage
+# work); this stack just makes the capability exist.
+#
+# dependsOn cert-manager because the plugin secures its CNPG-I gRPC endpoint with
+# cert-manager Certificates (issued by a self-signed Issuer it creates in its own
+# namespace — it does not touch the platform's ClusterIssuers), and
+# cloudnative-pg because the plugin registers against the operator it extends.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cloudnative-pg-barman
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./flux/cluster/cloudnative-pg-barman
+  prune: true
+  dependsOn:
+    - name: cert-manager
+    - name: cloudnative-pg
+  sourceRef:
+    kind: ${source_kind}
+    name: ${source_name}
+    namespace: flux-system
