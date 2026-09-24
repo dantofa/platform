@@ -7,7 +7,7 @@
 # issuerRef is pinned to the local-ca ClusterIssuer, rather than carrying the
 # per-cluster tls_issuer variable the DOKS cert substitutes: --tls-issuer is a
 # DOKS-only flag (local cluster-vars never sets it), and kind has no ACME path
-# anyway -- no public DNS-01 for a loopback name, and Let's Encrypt's
+# anyway — no public DNS-01 for a loopback name, and Let's Encrypt's
 # duplicate-certificate limit would be exhausted in a day by cluster recreates.
 # There is exactly one possible local issuer, so there is no choice to carry.
 #

@@ -18,7 +18,7 @@
 #     default volumes were correctly skipped.
 #
 #   - Backing the objects up is worse than useless. Velero cannot capture the volume
-#     CONTENTS -- that is the point -- but it does restore the PVC objects with CNPG's
+#     CONTENTS — that is the point — but it does restore the PVC objects with CNPG's
 #     `cnpg.io/pvcStatus: ready` annotation intact. The operator reads that as an
 #     initialized PGDATA, starts an instance against an empty directory, and the pod
 #     crash-loops ("unable to move `pg_wal` directory to the attached volume") with the
@@ -28,8 +28,8 @@
 #     produces no database at all.
 #
 # So the instance pods, the CNPG-owned PVCs and the `Cluster` CR are excluded, and a
-# namespace restore brings back everything AROUND the database -- Services, the CA and
-# server certificates, the application credentials Secret -- while the database comes
+# namespace restore brings back everything AROUND the database — Services, the CA and
+# server certificates, the application credentials Secret — while the database comes
 # back the only way it can: Flux re-applies the `Cluster` and CNPG recovers from its
 # own WAL archive.
 #
@@ -40,13 +40,13 @@
 # The `+()` anchor adds the label only when absent, so a downstream that deliberately
 # sets its own value keeps it. Unlike the tenant-scoped policies alongside it, this one
 # is not namespace-scoped: a CNPG instance is the same hazard wherever it runs. The
-# `Cluster` rule names a CRD this stack itself installs -- on a fresh bootstrap Kyverno
+# `Cluster` rule names a CRD this stack itself installs — on a fresh bootstrap Kyverno
 # may see the policy first and log "unable to convert GVK to GVR"; the policy still
 # reports Ready and Kyverno rebuilds its webhooks once the CRD appears.
 #
 # background is off: these are mutate-on-admission rules with no `mutateExisting`
 # targets, so background processing would do nothing. The reports-controller still
-# wants read access to the matched `Cluster` kind -- see kyverno-cnpg-rbac.yaml.
+# wants read access to the matched `Cluster` kind — see kyverno-cnpg-rbac.yaml.
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:

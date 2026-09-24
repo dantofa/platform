@@ -9,7 +9,7 @@
 # manifests are APPLIED, so the ClusterPolicies can land while the admission
 # controller is still starting. Kyverno registers its resource webhooks from those
 # policies, and `validate.kyverno.svc-fail` is fail-closed over every namespace but
-# kube-system and kyverno-system -- so for the seconds between registration and the
+# kube-system and kyverno-system — so for the seconds between registration and the
 # pods serving, every write in the cluster is rejected with `connect: connection
 # refused`. That is not theoretical: it broke a bootstrap by failing cert-manager's
 # Helm post-install hook, whose remediation uninstall hit the same webhook and left
