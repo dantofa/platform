@@ -14,6 +14,15 @@
 # Like the other shared stacks its sourceRef is source-agnostic — the
 # ${source_kind}/${source_name} placeholders are filled by the root's
 # postBuild.substituteFrom the cluster-vars ConfigMap.
+#
+# wait is set so that `dependsOn: cloudnative-pg` means the operator is serving
+# rather than merely applied: cloudnative-pg-barman depends on this stack for the
+# namespace and the HelmRepository it reuses. The stakes are lower than Kyverno's —
+# CNPG's webhooks are fail-closed but scoped to its own API group (clusters,
+# backups, poolers…), so a not-yet-ready operator blocks nothing outside
+# postgresql.cnpg.io. What it buys is an honest Ready: without it the cluster root
+# and `flux kustomization verify` report a converged tree while the operator is
+# still starting.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -23,6 +32,7 @@ spec:
   interval: 10m
   path: ./flux/cluster/cloudnative-pg
   prune: true
+  wait: true
   sourceRef:
     kind: ${source_kind}
     name: ${source_name}
