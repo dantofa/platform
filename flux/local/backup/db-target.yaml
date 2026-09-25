@@ -1,0 +1,15 @@
+---
+# Database-backup coordinates, the counterpart of backup-target for CNPG. A
+# downstream ObjectStore reads these to build its destinationPath and endpointURL.
+# The platform ships no ObjectStore itself — this is the contract, not a consumer
+# of it. Locally the bucket is the same SeaweedFS one Velero uses; on DOKS dctl
+# provisions a separate <cluster>-db-backup bucket.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-backup-target
+  namespace: cnpg-system
+data:
+  bucket: local-backup
+  region: us-east-1
+  endpoint: http://backup-s3.velero.svc.cluster.local:8333

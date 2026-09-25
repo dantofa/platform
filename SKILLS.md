@@ -384,10 +384,27 @@ database itself is simply absent. Bring it back by letting Flux re-apply your `C
 with a `bootstrap.recovery` stanza pointing at your own WAL archive; nothing needs to be
 deleted or untangled first.
 
-What that leaves you: **database recovery is yours**. If you need PITR, configure CNPG's
-own WAL archiving and base backups against object storage you own — the platform's
-`backup-credential` is scoped to the Velero namespace and is not yours to use. Without
-that, a destroyed cluster means a lost database, however green the Velero backups look.
+What that leaves you: **database recovery is yours — and the platform gives you the
+bucket to do it with.** Every cluster is provisioned with a database-backup bucket
+separate from Velero's, published in `cnpg-system` as:
+
+- `db-backup-target` (ConfigMap: `bucket`, `region`, `endpoint`)
+- `db-backup-credential` (Secret: `ACCESS_KEY_ID`, `ACCESS_SECRET_KEY` — the discrete
+  keys an `ObjectStore` selects)
+
+Point an `ObjectStore` at those, set `plugins: [{name: barman-cloud.cloudnative-pg.io,
+isWALArchiver: true, parameters: {barmanObjectName: …}}]` on your `Cluster`, and you have
+PITR. Use a destination prefix of your own under the bucket.
+
+Do **not** use Velero's `backup-credential` instead: it is a credentials *file* the
+plugin cannot read, and it is ReadWrite on the cluster's disaster-recovery bucket.
+
+Two things to know while this beds in. The bucket is **shared by every database on the
+cluster**, so anything with the credential can read and delete another database's
+backups — fine for first-party consumers, not a tenancy boundary. And the Secret
+currently lives only in `cnpg-system`: copy it into your own namespace until the
+platform clones it for you. Without any of this, a destroyed cluster means a lost
+database, however green the Velero backups look.
 
 The exclusion is by object, not by volume name, so it covers volumes you add later —
 `walStorage`, `tablespaces:` (`tbs-<name>`) and anything a future CNPG version mounts. It

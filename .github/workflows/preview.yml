@@ -124,14 +124,19 @@ jobs:
 
       # Teardown of the bucket + scoped key the bootstrap created (a completed
       # backup leaves objects, so a plain `space delete` would not suffice).
-      - name: Tear down backup bucket
+      - name: Tear down backup buckets
         if: always()
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
-        run: >-
-          nix develop --command
-          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
-          nix run .#default -- digitalocean space unlink "$CLUSTER_NAME-backup" || true
+        run: |
+          # Both buckets bootstrap created: Velero's, and the database one whose
+          # key is deliberately separate from it. Each is best-effort -- a failed
+          # unlink must not mask the failure that got us here.
+          for b in "$CLUSTER_NAME-backup" "$CLUSTER_NAME-db-backup"; do
+            nix develop --command \
+              bws run --project-id ${{ vars.BWS_PROJECT_ID }} -- \
+              nix run .#default -- digitalocean space unlink "$b" || true
+          done
 
       # On failure, snapshot DO-side + in-cluster state before the teardown below
       # destroys the cluster, so the failure can still be diagnosed afterwards.
