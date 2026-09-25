@@ -168,8 +168,12 @@ cluster it made; on billed infrastructure that belongs in an explicit workflow),
 bootstrapped more than once with different per-environment flags.
 
 Verification is **cluster-type-agnostic**: `just cluster verify health` (all nodes
-Ready + the whole GitOps tree reconciled), plus `backup|restore|image-scan` and
-`just cluster debug`, all act on whatever `$KUBECONFIG` points at. So a downstream
+Ready + the whole GitOps tree reconciled), plus `backup|restore|db-backup|image-scan`
+and `just cluster debug`, all act on whatever `$KUBECONFIG` points at. `db-backup` is
+the CNPG one: it archives a throwaway database through the barman-cloud plugin,
+destroys it, recovers it from object storage and asserts the row comes back — the
+recovery path that is yours, not Velero's. It defaults to the cluster's own backup
+target; point `DB_BACKUP_*` at your own bucket and key to run it anywhere else. So a downstream
 e2e differs between local and DOKS by only the lifecycle line — connect, then run
 the same gates.
 
@@ -353,10 +357,11 @@ second copy collides with everyone else's on a shared cluster. Declare your own 
 CR in your own reconcile root, the same split as prometheus-operator (platform ships the
 CRDs, you ship the `ServiceMonitor`).
 
-The barman-cloud plugin is what makes PITR possible at all — CNPG 1.26+ moved backup
-support out of the core operator, so an operator without it can run Postgres but cannot
-archive WAL. The platform ships no `ObjectStore`, so you still point your database at a
-bucket yourself.
+The barman-cloud plugin is the supported path to PITR — CNPG 1.26+ moved backup support
+out of the core operator into a CNPG-I plugin. The in-tree `backup.barmanObjectStore`
+field is still present in the `Cluster` CRD and still works in 1.30, but it is deprecated
+and slated for removal, so a database that relies on it is writing itself a migration. The
+platform ships no `ObjectStore`, so you still point your database at a bucket yourself.
 
 **Your database is not in the Velero backup, and that is enforced.** The
 `cnpg-exclude-from-velero-backup` Kyverno policy labels your `Cluster` CR, its instance

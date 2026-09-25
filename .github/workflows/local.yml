@@ -63,6 +63,15 @@ jobs:
       - name: Verify Velero backup
         run: nix develop --command just cluster verify backup
 
+      # The other half of recovery. Velero owns the objects around a database and
+      # deliberately not its contents, so this covers what that leaves: archive a
+      # throwaway database through the barman-cloud plugin, destroy it, recover it
+      # from object storage, assert the row comes back. It runs on kind because the
+      # in-cluster SeaweedFS store already has the discrete S3 keys the plugin
+      # needs; the DOKS equivalent waits on the DB-backup bucket (#53).
+      - name: Verify CNPG point-in-time recovery
+        run: nix develop --command just cluster verify db-backup
+
       - name: Delete local cluster
         if: always()
         run: nix run .#default -- local cluster delete
