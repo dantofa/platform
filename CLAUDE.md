@@ -90,6 +90,17 @@ ConfigMap (namespace-scoped, one level down). On DOKS `dctl` writes `backup-targ
 plus the `backup-credential` Secret (a bucket-scoped Spaces key — the DO token
 never enters the cluster); on kind both come from `flux/local`.
 
+**Two buckets, two shapes.** Bootstrap also provisions `<cluster>-db-backup` with its
+own bucket-scoped key and writes `db-backup-target` + `db-backup-credential` into
+`cnpg-system` for CNPG `ObjectStore`s. Separate from Velero's by design: that key is
+ReadWrite on the cluster's disaster-recovery bucket, so a database able to reach it
+could delete the cluster's backups. The shapes differ too — Velero reads one
+credentials-*file* key, the barman plugin reads discrete `ACCESS_KEY_ID`/
+`ACCESS_SECRET_KEY` (its `ObjectStore` selects them with SecretKeySelectors), which is
+why `core.SecretShape` renders one credential two ways. On kind the same pair comes
+from `flux/local` against SeaweedFS, so the contract is identical on both cluster
+types.
+
 **Secrets.** Secrets that are a source of truth (API tokens, machine-account
 credentials) come from Bitwarden via ESO ExternalSecrets against the `bitwarden`
 ClusterSecretStore. **Disposable, cluster-local secrets** (no external source of

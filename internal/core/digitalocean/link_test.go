@@ -241,3 +241,72 @@ func TestLinkAndStoreRevokesNewKeyOnStoreFailure(t *testing.T) {
 		t.Errorf("expected un-persisted key AK2 to be revoked, got %q", p.revoked)
 	}
 }
+
+func TestSecretShapesRenderTheirConsumersFormat(t *testing.T) {
+	cred := Credential{AccessKey: "AKID", SecretKey: "s3cr3t"}
+
+	velero := VeleroSecretData(cred)
+	if len(velero) != 1 {
+		t.Fatalf("velero shape has %d keys, want 1", len(velero))
+	}
+	want := "[default]\naws_access_key_id=AKID\naws_secret_access_key=s3cr3t\n"
+	if got := string(velero[VeleroCredentialsKey]); got != want {
+		t.Errorf("velero %q = %q, want %q", VeleroCredentialsKey, got, want)
+	}
+
+	// The barman plugin selects these with SecretKeySelectors, so the values must
+	// be the bare id and secret -- not a credentials file, and not wrapped.
+	barman := BarmanSecretData(cred)
+	if got := string(barman[BarmanAccessKeyIDKey]); got != "AKID" {
+		t.Errorf("barman %q = %q, want %q", BarmanAccessKeyIDKey, got, "AKID")
+	}
+	if got := string(barman[BarmanSecretKeyKey]); got != "s3cr3t" {
+		t.Errorf("barman %q = %q, want %q", BarmanSecretKeyKey, got, "s3cr3t")
+	}
+	if len(barman) != 2 {
+		t.Errorf("barman shape has %d keys, want 2: %v", len(barman), keysOf(barman))
+	}
+
+	// The two shapes must not collide: a consumer pointed at the wrong Secret
+	// should find nothing rather than something it misreads.
+	if _, ok := barman[VeleroCredentialsKey]; ok {
+		t.Errorf("barman shape carries velero's %q key", VeleroCredentialsKey)
+	}
+	if _, ok := velero[BarmanAccessKeyIDKey]; ok {
+		t.Errorf("velero shape carries barman's %q key", BarmanAccessKeyIDKey)
+	}
+}
+
+func keysOf(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func TestParseSecretShape(t *testing.T) {
+	cred := Credential{AccessKey: "AKID", SecretKey: "s3cr3t"}
+	for _, tc := range []struct {
+		format  string
+		wantKey string
+	}{
+		{SecretFormatVelero, VeleroCredentialsKey},
+		{"", VeleroCredentialsKey}, // unset defaults to the original consumer
+		{SecretFormatBarman, BarmanAccessKeyIDKey},
+	} {
+		shape, err := ParseSecretShape(tc.format)
+		if err != nil {
+			t.Fatalf("ParseSecretShape(%q) errored: %v", tc.format, err)
+		}
+		if _, ok := shape(cred)[tc.wantKey]; !ok {
+			t.Errorf("ParseSecretShape(%q) rendered without %q", tc.format, tc.wantKey)
+		}
+	}
+
+	// Rejected rather than defaulted: a typo must not silently write a Secret
+	// that looks right and that no consumer can read.
+	if _, err := ParseSecretShape("barmen"); err == nil {
+		t.Error("ParseSecretShape accepted an unknown format")
+	}
+}

@@ -91,6 +91,13 @@ func writeTempKubeconfig(data []byte) (string, func(), error) {
 // flux/cluster/velero stack declares.
 const backupNamespace = "velero"
 
+// dbBackupNamespace holds the database-backup contract (db-backup-credential +
+// db-backup-target). On DOKS dctl writes that pair itself; on kind the values are
+// static and come from flux/local, so the namespace is ensured here for the same
+// reason the velero one is -- the flux/cluster/cloudnative-pg stack stays its
+// sole declaring owner.
+const dbBackupNamespace = "cnpg-system"
+
 func newLocalBootstrapCmd() *cobra.Command {
 	var (
 		fluxVersion, registryName, artifactName, tag string
@@ -143,6 +150,9 @@ func newLocalBootstrapCmd() *cobra.Command {
 				return render.Fail(err)
 			}
 			if err := kc.EnsureNamespace(ctx, backupNamespace); err != nil {
+				return render.Fail(err)
+			}
+			if err := kc.EnsureNamespace(ctx, dbBackupNamespace); err != nil {
 				return render.Fail(err)
 			}
 

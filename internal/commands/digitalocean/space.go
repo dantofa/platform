@@ -91,7 +91,7 @@ func newSpaceUnlinkCmd(region, token *string) *cobra.Command {
 }
 
 func newSpaceLinkCmd(region, token *string) *cobra.Command {
-	var cluster, kubeconfigPath, namespace, secretName, configMapName string
+	var cluster, kubeconfigPath, namespace, secretName, configMapName, secretFormat string
 	cmd := &cobra.Command{
 		Use:   "link <bucket>",
 		Short: "Link a Spaces bucket to a cluster for backups.",
@@ -103,12 +103,16 @@ func newSpaceLinkCmd(region, token *string) *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bucket := args[0]
+			shape, err := docore.ParseSecretShape(secretFormat)
+			if err != nil {
+				return render.Fail(err)
+			}
 			kc, err := kubeClient(cmd.Context(), cluster, kubeconfigPath, *token)
 			if err != nil {
 				return render.Fail(err)
 			}
 			return withSpaces(cmd, *region, *token, func(ctx context.Context, client *doclient.SpacesClient) error {
-				store := doclient.NewCredentialStore(kc, namespace, secretName, configMapName)
+				store := doclient.NewCredentialStore(kc, namespace, secretName, configMapName, shape)
 				res, err := docore.LinkAndStore(ctx, client, store, bucket)
 				if err != nil {
 					return err
@@ -120,11 +124,15 @@ func newSpaceLinkCmd(region, token *string) *cobra.Command {
 					"namespace":  namespace,
 					"secret":     store.SecretName(),
 					"config_map": store.ConfigMapName(),
+					"format":     secretFormat,
 				})
 			})
 		},
 	}
 	f := cmd.Flags()
+	f.StringVar(&secretFormat, "secret-format", docore.SecretFormatVelero,
+		"Secret shape to write: `velero` (one credentials-file key) or `barman` "+
+			"(discrete accessKeyId/secretAccessKey keys, for a CNPG ObjectStore).")
 	f.StringVar(&cluster, "cluster", "",
 		"DOKS cluster name whose kubeconfig to fetch via the DO token.")
 	f.StringVar(&kubeconfigPath, "kubeconfig", "",
