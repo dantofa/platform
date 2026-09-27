@@ -23,12 +23,13 @@
 #   LOCAL_CA_FILE     where `cluster local ca` writes the trust anchor (default: ./.local.pem)
 #   TRIVYIGNORE_BASE  mandatory accepted-CVE file (default: ./.trivyignore-cluster)
 #   TRIVYIGNORE_LOCAL optional extra accepted-CVE file (default: ./.trivyignore-cluster)
-#   DB_BACKUP_BUCKET / DB_BACKUP_ENDPOINT   object store for `cluster verify db-backup`
-#                     (default: the cluster's own backup-target ConfigMap)
-#   DB_BACKUP_ACCESS_KEY_ID / DB_BACKUP_SECRET_ACCESS_KEY
-#                     discrete S3 keys for the barman plugin, which cannot read
-#                     Velero's credentials-file Secret (default: the local
-#                     SeaweedFS pair -- set these on any other store)
+#   DB_BACKUP_BUCKET / DB_BACKUP_ENDPOINT / DB_BACKUP_ACCESS_KEY_ID /
+#   DB_BACKUP_SECRET_ACCESS_KEY   object store for `cluster verify db-backup`
+#                     (default: the db-backup-target ConfigMap + db-backup-credential
+#                     Secret the platform publishes in cnpg-system on every cluster
+#                     type, so the drill normally needs none of these set)
+#   DB_BACKUP_NAMESPACE / DB_BACKUP_CONFIGMAP / DB_BACKUP_SECRET
+#                     where that contract lives, if you publish it elsewhere
 #   DB_DRILL_NS       throwaway namespace for the drill (default: cnpg-pitr-drill)
 
 # Dispatchers: `just cluster <area> <action>` -> `just cluster-<area>-<action>`,
@@ -172,12 +173,11 @@ cluster-verify-restore:
 # Creates only throwaway resources in $DB_DRILL_NS and deletes them on the way out
 # -- the platform ships no `Cluster` CRs and this does not change that.
 #
-# Storage coordinates default to the cluster's own backup target (the backup-target
-# ConfigMap written for Velero) under a drill-specific prefix, so on kind this runs
-# against SeaweedFS with no configuration. Credentials are separate and explicit:
-# the plugin wants discrete accessKeyId/secretAccessKey, which Velero's
-# credentials-file Secret does not hold, so they come from the environment and
-# default to the local SeaweedFS pair. Point them at a real key on any other store.
+# It reads the platform's database-backup contract -- db-backup-target +
+# db-backup-credential in cnpg-system -- which bootstrap publishes on both cluster
+# types: a dedicated Spaces bucket and bucket-scoped key on DOKS, the in-cluster
+# SeaweedFS store on kind. So the drill needs no configuration on either, and the
+# DB_BACKUP_* variables exist only for a store published somewhere else.
 cluster-verify-db-backup:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -199,14 +199,27 @@ cluster-verify-db-backup:
   # Storage class follows the cluster (standard on kind, do-block-storage on DOKS);
   # cluster-vars carries it already, so the drill does not need its own knob.
   sc="${DB_DRILL_STORAGE_CLASS:-$(kubectl -n flux-system get configmap cluster-vars -o jsonpath='{.data.storage_class}')}"
-  bucket="${DB_BACKUP_BUCKET:-$(kubectl -n velero get configmap backup-target -o jsonpath='{.data.bucket}')}"
-  endpoint="${DB_BACKUP_ENDPOINT:-$(kubectl -n velero get configmap backup-target -o jsonpath='{.data.endpoint}')}"
+  # The database-backup contract, published identically on both cluster types: dctl
+  # writes it from a dedicated Spaces bucket on DOKS, flux/local writes it against
+  # SeaweedFS on kind. Reading it here is what keeps the drill cluster-type-agnostic
+  # -- and it deliberately is not Velero's target: that credential is a credentials
+  # file the plugin cannot parse, on the bucket holding the cluster's
+  # disaster-recovery data.
+  cns="${DB_BACKUP_NAMESPACE:-cnpg-system}"
+  cm="${DB_BACKUP_CONFIGMAP:-db-backup-target}"
+  secret="${DB_BACKUP_SECRET:-db-backup-credential}"
+  bucket="${DB_BACKUP_BUCKET:-$(kubectl -n "$cns" get configmap "$cm" -o jsonpath='{.data.bucket}')}"
+  endpoint="${DB_BACKUP_ENDPOINT:-$(kubectl -n "$cns" get configmap "$cm" -o jsonpath='{.data.endpoint}')}"
   # No region: SeaweedFS ignores it and the endpoint carries the rest. A store that
   # requires one (real S3) needs it added to the Secret and referenced from
   # s3Credentials.region.
-  key_id="${DB_BACKUP_ACCESS_KEY_ID:-localbackup}"
-  key_secret="${DB_BACKUP_SECRET_ACCESS_KEY:-localbackupsecret}"
-  : "${bucket:?no bucket: set DB_BACKUP_BUCKET or run against a cluster with a backup-target ConfigMap}"
+  #
+  # Credentials come from the Secret rather than literals: on DOKS they are a
+  # per-cluster, bucket-scoped Spaces key that nothing outside the cluster knows.
+  key_id="${DB_BACKUP_ACCESS_KEY_ID:-$(kubectl -n "$cns" get secret "$secret" -o jsonpath='{.data.ACCESS_KEY_ID}' | base64 -d)}"
+  key_secret="${DB_BACKUP_SECRET_ACCESS_KEY:-$(kubectl -n "$cns" get secret "$secret" -o jsonpath='{.data.ACCESS_SECRET_KEY}' | base64 -d)}"
+  : "${bucket:?no bucket: set DB_BACKUP_BUCKET, or run against a cluster whose bootstrap published ${cm} in ${cns}}"
+  : "${key_id:?no credential: set DB_BACKUP_ACCESS_KEY_ID, or run against a cluster whose bootstrap published ${secret} in ${cns}}"
   echo "PITR drill: s3://${bucket}/${prefix} via ${endpoint} (storageClass ${sc})"
 
   # The namespace is deleted on the way out either way, so a failing run has to
