@@ -1,0 +1,36 @@
+---
+# What Kyverno needs to provide a backup destination -- and, as much as the point,
+# what it does not.
+#
+# No Secret verbs appear here. Kyverno generates an ExternalSecret *asking* for the
+# credential; ESO does the reading, with `get` on one Secret name in one namespace
+# (eso-config/db-backup-reader-rbac.yaml). A Kyverno clone would instead have needed
+# `list` on Secrets, which takes no resourceNames, making the smallest possible
+# grant every Secret in every namespace.
+#
+# Verbs measured, not guessed -- Kyverno's policy validator refuses a generate rule
+# whose controllers lack them, and names them: get/list for the admission controller
+# (it validates the rule can act) and create/update/delete for the background
+# controller (it does the generating); watch keeps `synchronize` in step.
+# ConfigMap reads for the ObjectStore rule's context need nothing: both controllers
+# already have get/list on configmaps.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno:cnpg-backup-destination
+  labels:
+    rbac.kyverno.io/aggregate-to-admission-controller: "true"
+    rbac.kyverno.io/aggregate-to-background-controller: "true"
+    rbac.kyverno.io/aggregate-to-reports-controller: "true"
+rules:
+  # The trigger: a Cluster appearing is what the rules match on.
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters"]
+    verbs: ["get", "list", "watch"]
+  # The two generated objects.
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["barmancloud.cnpg.io"]
+    resources: ["objectstores"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
