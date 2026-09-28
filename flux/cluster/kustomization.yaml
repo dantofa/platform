@@ -18,6 +18,7 @@ resources:
   - trivy.yaml
   - cloudnative-pg.yaml
   - cloudnative-pg-barman.yaml
+  - cnpg-backup-destination.yaml
   - prometheus-operator-crds.yaml
   - prometheus.yaml
   - loki.yaml

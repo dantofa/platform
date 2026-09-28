@@ -7,5 +7,3 @@ resources:
   - disallow-latest-tag.yaml
   - cnpg-velero-exclude.yaml
   - kyverno-cnpg-rbac.yaml
-  - kyverno-cnpg-backup-rbac.yaml
-  - cnpg-backup-destination.yaml
