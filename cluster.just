@@ -27,6 +27,8 @@
 #                     (default: cnpg-pitr-drill-<epoch>, unique per run)
 #   DB_DRILL_STORAGE_CLASS  storage class for the drill's volumes (default: the
 #                     cluster's own, from cluster-vars)
+#   DB_DRILL_SKIP_ROTATION  skip the credential-rotation half, which briefly breaks
+#                     WAL archiving for every database on the cluster
 
 # Dispatchers: `just cluster <area> <action>` -> `just cluster-<area>-<action>`,
 # extending the platform's existing `local {{action}}` / `github {{action}}` pattern.
@@ -308,6 +310,15 @@ cluster-verify-db-backup:
     bootstrap:
       recovery:
         source: ${src}
+    # The recovered database resumes archiving, to its own serverName under the same
+    # ObjectStore. Both because a restored database with no ongoing backup is only
+    # half recovered, and because the rotation check below watches this cluster's
+    # archiving condition -- which would not exist without an archiver.
+    plugins:
+      - name: barman-cloud.cloudnative-pg.io
+        isWALArchiver: true
+        parameters:
+          barmanObjectName: ${store}
     externalClusters:
       - name: ${src}
         plugin:
@@ -327,7 +338,107 @@ cluster-verify-db-backup:
     echo "PITR drill FAILED: recovered database has marker '${got}', want '${marker}'" >&2
     exit 1
   fi
-  echo "PITR drill OK: ${marker} survived a destroy/recover cycle through the barman-cloud plugin"
+  echo "Recovery OK: ${marker} came back through the barman-cloud plugin"
+
+  # Rotation check. Materializing the credential through ESO instead of copying it
+  # by hand only pays off if a rotated key actually reaches a RUNNING database --
+  # and that is not obvious: if the instance read the credential once at startup, a
+  # rotation would leave it archiving with a revoked key and nothing would say so.
+  #
+  # Rather than prove propagation with a second valid key (which needs a DO token on
+  # DOKS and would not exist on kind), rotate to a deliberately wrong one and watch
+  # the database BREAK, then rotate back and watch it recover. Breaking is the
+  # assertion: it can only happen if the instance picked up the new value.
+  #
+  # NOTE THE BLAST RADIUS: this rewrites the credential every database on the cluster
+  # shares, so for the ~30s it is wrong, WAL archiving fails cluster-wide. Nothing is
+  # lost (WAL queues on the instances and retries), but it will trip alerts. Set
+  # DB_DRILL_SKIP_ROTATION=1 to skip it when running against a cluster with databases
+  # you are not allowed to disturb.
+  if [ -n "${DB_DRILL_SKIP_ROTATION:-}" ]; then
+    echo "Rotation check skipped (DB_DRILL_SKIP_ROTATION set)"
+    echo "PITR drill OK: ${marker} survived a destroy/recover cycle through the barman-cloud plugin"
+    exit 0
+  fi
+  echo "Rotation check: swapping the source credential for a wrong one..."
+  orig_id="$(kubectl -n cnpg-system get secret db-backup-credential -o jsonpath='{.data.ACCESS_KEY_ID}')"
+  orig_secret="$(kubectl -n cnpg-system get secret db-backup-credential -o jsonpath='{.data.ACCESS_SECRET_KEY}')"
+  : "${orig_id:?could not read the source credential to rotate}"
+  wrong_id="$(printf 'rotated-wrong' | base64 | tr -d '\n')"
+
+  # Restoring the source credential matters more than the drill's own cleanup: a
+  # cluster left holding a bogus key has a broken backup path for every database on
+  # it, so put it back even if an assertion below fails.
+  restore_credential() {
+    kubectl -n cnpg-system patch secret db-backup-credential --type=json \
+      -p "[{\"op\":\"replace\",\"path\":\"/data/ACCESS_KEY_ID\",\"value\":\"${orig_id}\"},{\"op\":\"replace\",\"path\":\"/data/ACCESS_SECRET_KEY\",\"value\":\"${orig_secret}\"}]" \
+      >/dev/null 2>&1 || true
+  }
+  trap 'restore_credential; cleanup' EXIT
+
+  # ESO refreshes on its own interval; force it so the check takes seconds rather
+  # than minutes. The interval itself is asserted separately below.
+  force_sync() {
+    kubectl -n "$ns" annotate externalsecret db-backup-credential \
+      "force-sync=$(date +%s%N)" --overwrite >/dev/null
+  }
+  # Wait for the materialized copy to carry $1 as its ACCESS_KEY_ID.
+  await_copy() {
+    for _ in $(seq 1 30); do
+      if [ "$(kubectl -n "$ns" get secret db-backup-credential -o jsonpath='{.data.ACCESS_KEY_ID}')" = "$1" ]; then
+        return 0
+      fi
+      sleep 4
+    done
+    echo "rotation FAILED: the materialized credential never changed" >&2
+    return 1
+  }
+  # Wait for the running instance's archiving condition to reach $1, forcing a WAL
+  # switch each round so it has something to archive and a verdict to report.
+  await_archiving() {
+    seen=""
+    for _ in $(seq 1 45); do
+      kubectl -n "$ns" exec "${restored}-1" -c postgres -- \
+        psql -U postgres -d app -tAc "SELECT pg_switch_wal();" >/dev/null 2>&1 || true
+      seen="$(kubectl -n "$ns" get cluster.postgresql.cnpg.io "$restored" -o jsonpath='{range .status.conditions[?(@.type=="ContinuousArchiving")]}{.status}{end}')"
+      if [ "$seen" = "$1" ]; then
+        return 0
+      fi
+      sleep 4
+    done
+    # Report what was actually there. An EMPTY value means the condition does not
+    # exist at all -- the cluster has no WAL archiver -- which is a different fault
+    # from a credential the instance ignored, and reads identically in a bare
+    # timeout.
+    echo "rotation FAILED: archiving is '${seen:-<no such condition>}', waited for ${1}" >&2
+    return 1
+  }
+
+  kubectl -n cnpg-system patch secret db-backup-credential --type=json \
+    -p "[{\"op\":\"replace\",\"path\":\"/data/ACCESS_KEY_ID\",\"value\":\"${wrong_id}\"}]" >/dev/null
+  force_sync
+  await_copy "$wrong_id"
+  echo "  wrong credential reached the database's namespace"
+  await_archiving False
+  echo "  archiving broke, so the running instance is using the rotated value"
+
+  echo "Rotation check: restoring the real credential..."
+  restore_credential
+  force_sync
+  await_copy "$orig_id"
+  await_archiving True
+  echo "  archiving recovered without touching the database"
+
+  # The interval is what makes this automatic in production, where nothing forces a
+  # sync. Assert it is bounded: a long one means a long archiving outage after every
+  # rotation (the old key is revoked once the new one is stored).
+  interval="$(kubectl -n "$ns" get externalsecret db-backup-credential -o jsonpath='{.spec.refreshInterval}')"
+  case "$interval" in
+    1m|2m|3m|4m|5m|6m|7m|8m|9m|10m) echo "  refreshInterval ${interval} bounds the rotation window" ;;
+    *) echo "rotation FAILED: refreshInterval is ${interval}; a rotation would leave databases on a revoked key for that long" >&2; exit 1 ;;
+  esac
+
+  echo "PITR drill OK: ${marker} survived a destroy/recover cycle, and a credential rotation reached the running database"
 
 # Image security gate: fail if a PLATFORM image (one we deploy) carries a CRITICAL
 # vulnerability not accepted in the merged ignore list. DOKS-managed namespaces

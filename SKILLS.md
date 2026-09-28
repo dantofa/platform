@@ -172,8 +172,12 @@ Ready + the whole GitOps tree reconciled), plus `backup|restore|db-backup|image-
 and `just cluster debug`, all act on whatever `$KUBECONFIG` points at. `db-backup` is
 the CNPG one: it declares a `Cluster` and nothing else, so it also proves the
 destination the platform generates for you works — archive, destroy, recover, assert
-the row comes back. That is the recovery path that is yours, not Velero's, and it needs
-no configuration on either cluster type. So a downstream
+the row comes back, then rotate the backup credential and assert a running database
+follows it. That is the recovery path that is yours, not Velero's, and it needs no
+configuration on either cluster type. One caveat: the rotation half rewrites the
+credential every database on the cluster shares, so archiving fails cluster-wide for
+about half a minute — pass `DB_DRILL_SKIP_ROTATION=1` on a cluster carrying databases
+you cannot disturb. So a downstream
 e2e differs between local and DOKS by only the lifecycle line — connect, then run
 the same gates.
 
