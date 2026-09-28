@@ -260,7 +260,7 @@ func teardownFailed(err error, force bool) error {
 
 func newClusterBootstrapCmd(token *string) *cobra.Command {
 	var (
-		bucket, region, fluxVersion           string
+		bucket, dbBucket, region, fluxVersion string
 		sourceType, sourceURL, sourceRevision string
 		sourceSecretRef, sourceToken          string
 		sourcePath, src, baseDomain           string
@@ -286,6 +286,9 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 			if bucket == "" {
 				bucket = cluster + "-backup"
 			}
+			if dbBucket == "" {
+				dbBucket = cluster + "-db-backup"
+			}
 
 			// Fetch the cluster's kubeconfig via the DO token (to a temp file the
 			// flux CLI can consume).
@@ -307,10 +310,25 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 				return render.Fail(err)
 			}
 
-			// 1. Link the backup bucket + credential into the cluster.
+			// 1. Link the backup buckets + credentials into the cluster. Two
+			// buckets, deliberately: Velero's holds the cluster's
+			// disaster-recovery data and its key is ReadWrite on it, so a
+			// database that could reach that key could delete the cluster's
+			// backups. The database bucket carries its own bucket-scoped key,
+			// written in the shape the CNPG barman-cloud plugin reads.
 			if err := withSpaces(cmd, region, *token, func(ctx context.Context, sc *doclient.SpacesClient) error {
-				store := doclient.NewCredentialStore(kc, namespace, secretName, configMapName)
-				_, err := docore.LinkAndStore(ctx, sc, store, bucket)
+				store := doclient.NewCredentialStore(kc, namespace, secretName, configMapName, docore.VeleroSecretData)
+				if _, err := docore.LinkAndStore(ctx, sc, store, bucket); err != nil {
+					return err
+				}
+				dbStore := doclient.NewCredentialStore(
+					kc,
+					doclient.DefaultDBNamespace,
+					doclient.DefaultDBSecretName,
+					doclient.DefaultDBConfigMapName,
+					docore.BarmanSecretData,
+				)
+				_, err := docore.LinkAndStore(ctx, sc, dbStore, dbBucket)
 				return err
 			}); err != nil {
 				return err // withSpaces already rendered
@@ -428,6 +446,7 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 			return render.JSON(map[string]any{
 				"cluster":        cluster,
 				"bucket":         bucket,
+				"db_bucket":      dbBucket,
 				"flux_source":    res.Source,
 				"source_kind":    res.SourceKind,
 				"revision":       res.Revision,
@@ -437,6 +456,10 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVar(&bucket, "bucket", "", "Backup bucket name (default <cluster>-backup).")
+	f.StringVar(&dbBucket, "db-bucket", "",
+		"Database-backup bucket name (default <cluster>-db-backup). Its scoped key is "+
+			"stored in "+doclient.DefaultDBNamespace+" as "+doclient.DefaultDBSecretName+
+			" for CNPG ObjectStores; separate from the Velero bucket by design.")
 	f.StringVar(&region, "region", "", "Spaces region (defaults to $DIGITALOCEAN_SPACES_REGION / nyc3).")
 	f.StringVar(&fluxVersion, "flux-version", "", "Flux version to install (default: the bundled flux CLI's version).")
 	f.StringVar(&sourceType, "source-type", string(fluxcore.DefaultSourceType), `GitOps source type: "oci" or "git".`)

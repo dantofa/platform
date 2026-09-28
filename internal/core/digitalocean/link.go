@@ -134,6 +134,58 @@ func VeleroCredentialsFile(c Credential) string {
 	)
 }
 
+// Secret data keys. Velero reads one key holding a credentials file; the CNPG
+// barman-cloud plugin reads two discrete keys, because its ObjectStore selects
+// them with SecretKeySelectors (s3Credentials.accessKeyId / .secretAccessKey)
+// and cannot parse a file. One credential, two renderings — which is why a
+// consumer cannot simply be pointed at Velero's Secret.
+const (
+	VeleroCredentialsKey = "cloud"
+	BarmanAccessKeyIDKey = "ACCESS_KEY_ID"
+	BarmanSecretKeyKey   = "ACCESS_SECRET_KEY"
+)
+
+// SecretShape renders a credential into the Secret data its consumer expects.
+// Keeping the rendering here (rather than in the adapter that writes it) is what
+// lets one store serve both consumers without either shape leaking into the
+// other.
+type SecretShape func(Credential) map[string][]byte
+
+// VeleroSecretData renders the credential as Velero's credentials-file Secret.
+func VeleroSecretData(c Credential) map[string][]byte {
+	return map[string][]byte{VeleroCredentialsKey: []byte(VeleroCredentialsFile(c))}
+}
+
+// BarmanSecretData renders the credential as the discrete key pair the CNPG
+// barman-cloud plugin's ObjectStore references.
+func BarmanSecretData(c Credential) map[string][]byte {
+	return map[string][]byte{
+		BarmanAccessKeyIDKey: []byte(c.AccessKey),
+		BarmanSecretKeyKey:   []byte(c.SecretKey),
+	}
+}
+
+// SecretFormat names a SecretShape on the command line.
+const (
+	SecretFormatVelero = "velero"
+	SecretFormatBarman = "barman"
+)
+
+// ParseSecretShape resolves a --secret-format value to its renderer. An unknown
+// format is rejected rather than defaulted: silently writing the wrong shape
+// produces a Secret that looks right and that no consumer can read.
+func ParseSecretShape(format string) (SecretShape, error) {
+	switch format {
+	case SecretFormatVelero, "":
+		return VeleroSecretData, nil
+	case SecretFormatBarman:
+		return BarmanSecretData, nil
+	default:
+		return nil, fmt.Errorf("unknown secret format %q (want %q or %q)",
+			format, SecretFormatVelero, SecretFormatBarman)
+	}
+}
+
 // CredentialStore persists a Spaces credential (and the bucket coordinates) into
 // a cluster and reports the access key currently stored there, so rotation can
 // revoke the superseded one. Implemented against Kubernetes — the DO token never

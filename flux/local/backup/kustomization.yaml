@@ -4,3 +4,5 @@ kind: Kustomization
 resources:
   - credential.yaml
   - target.yaml
+  - db-credential.yaml
+  - db-target.yaml
