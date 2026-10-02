@@ -3,18 +3,21 @@ package digitalocean
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
 
 type fakeClusterAPI struct {
-	clusters   []Cluster
-	getStates  []string // successive states returned by Get (for wait)
-	getCalls   int
-	created    CreateSpec
-	updatedID  string
-	updateSpec UpdateSpec
-	deletedID  string
+	clusters            []Cluster
+	getStates           []string // successive states returned by Get (for wait)
+	getCalls            int
+	created             CreateSpec
+	updatedID           string
+	updateSpec          UpdateSpec
+	associatedResources AssociatedResources // returned by AssociatedResources
+	deletedID           string
+	deletedResources    AssociatedResources // passed to DeleteSelective
 }
 
 func (f *fakeClusterAPI) List(context.Context) ([]Cluster, error) { return f.clusters, nil }
@@ -27,7 +30,16 @@ func (f *fakeClusterAPI) Update(_ context.Context, id string, spec UpdateSpec) (
 	f.updatedID, f.updateSpec = id, spec
 	return Cluster{ID: id, Name: spec.Name}, nil
 }
-func (f *fakeClusterAPI) Delete(_ context.Context, id string) error { f.deletedID = id; return nil }
+
+func (f *fakeClusterAPI) AssociatedResources(_ context.Context, _ string) (AssociatedResources, error) {
+	return f.associatedResources, nil
+}
+
+func (f *fakeClusterAPI) DeleteSelective(_ context.Context, id string, resources AssociatedResources) error {
+	f.deletedID, f.deletedResources = id, resources
+	return nil
+}
+
 func (f *fakeClusterAPI) Get(context.Context, string) (Cluster, error) {
 	state := f.getStates[f.getCalls]
 	if f.getCalls < len(f.getStates)-1 {
@@ -92,6 +104,23 @@ func TestDeleteClusterIdempotent(t *testing.T) {
 	id, err = DeleteCluster(context.Background(), f, "prod")
 	if err != nil || id != "id-9" || f.deletedID != "id-9" {
 		t.Fatalf("expected id-9 deleted, got id=%q deleted=%q err=%v", id, f.deletedID, err)
+	}
+}
+
+func TestDeleteClusterReapsAssociatedResources(t *testing.T) {
+	f := &fakeClusterAPI{
+		clusters: []Cluster{{ID: "id-9", Name: "prod"}},
+		associatedResources: AssociatedResources{
+			VolumeIDs:       []string{"vol-1", "vol-2"},
+			LoadBalancerIDs: []string{"lb-1"},
+		},
+	}
+	if _, err := DeleteCluster(context.Background(), f, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	want := AssociatedResources{VolumeIDs: []string{"vol-1", "vol-2"}, LoadBalancerIDs: []string{"lb-1"}}
+	if !reflect.DeepEqual(f.deletedResources, want) {
+		t.Errorf("DeleteSelective got resources %+v, want %+v", f.deletedResources, want)
 	}
 }
 
