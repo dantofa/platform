@@ -1,4 +1,14 @@
 ---
+# global.crdWatcher: without it, the admission controller's discovery cache --
+# what a generate rule's TARGET kind is validated against -- only refreshes on a
+# poll hardcoded to 15m (not configurable without this flag). dependsOn only
+# orders the apply; it can't make Kyverno notice a CRD a dependency just
+# installed any faster than that poll. cnpg-backup-destination hit exactly this
+# on a fresh cluster: eso finished, the ExternalSecret CRD existed, and the
+# policy's dry-run still failed GVR resolution for several minutes because the
+# admission controller's cache hadn't polled since. crdWatcher switches it to an
+# informer that invalidates the cache on CRD add/update/delete, so a rule can
+# target a CRD its own dependsOn just installed.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -27,6 +37,8 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    global:
+      crdWatcher: true
     admissionController:
       replicas: 2
       resources:
