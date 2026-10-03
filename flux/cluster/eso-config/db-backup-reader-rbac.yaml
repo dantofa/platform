@@ -1,0 +1,64 @@
+---
+# The one identity allowed to read the database-backup credential, and the
+# narrowest grant that does it: `get` on a single Secret name in a single
+# namespace. `get` accepts resourceNames -- which is the whole reason this design
+# uses ESO for the cross-namespace copy instead of a Kyverno clone, whose `list`
+# requirement cannot be restricted to one Secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eso-db-backup-reader
+  namespace: cnpg-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eso-db-backup-reader
+  namespace: cnpg-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["db-backup-credential"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-db-backup-reader
+  namespace: cnpg-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-db-backup-reader
+subjects:
+  - kind: ServiceAccount
+    name: eso-db-backup-reader
+    namespace: cnpg-system
+---
+# ESO authenticates to the store by minting a token for that ServiceAccount, so
+# its controller needs TokenRequest on exactly that name -- not on service
+# accounts in general.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eso-db-backup-token
+  namespace: cnpg-system
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: ["eso-db-backup-reader"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-db-backup-token
+  namespace: cnpg-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-db-backup-token
+subjects:
+  - kind: ServiceAccount
+    name: external-secrets
+    namespace: external-secrets-system

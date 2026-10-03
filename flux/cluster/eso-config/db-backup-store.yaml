@@ -1,0 +1,49 @@
+---
+# The database-backup store: a second ClusterSecretStore whose "remote" is this
+# same cluster, so a `Cluster` in any namespace can materialize the backup
+# credential without anyone copying it by hand.
+#
+# Why ESO rather than a Kyverno clone. The credential has to cross namespaces, and
+# whatever crosses it needs permission to read Secrets. Kyverno cannot be narrowed
+# for that job: cloning requires `list` on Secrets, and `list` takes no
+# resourceNames, so the smallest possible grant is every Secret in every namespace
+# (measured -- Kyverno's own policy validator refuses the rule without it). ESO can
+# be narrowed all the way down, because reading one named key needs only `get`:
+#
+#   eso-db-backup-reader  ->  get secrets ["db-backup-credential"]  in cnpg-system
+#
+# That is the entire secret-reading surface this feature adds. Kyverno only
+# generates the ExternalSecret that asks for it (see
+# kyverno-policies/cnpg-backup-destination.yaml) and never reads a Secret itself.
+#
+# remoteNamespace is pinned HERE, not in the generated ExternalSecret, so a
+# downstream editing its own ExternalSecret can only name keys inside cnpg-system
+# -- it cannot repoint the store at flux-system or velero.
+#
+# Do NOT switch a consumer to ESO's `find`/regex lookup: that needs `list`, which
+# cannot be name-restricted, and would silently reopen the hole this design avoids.
+# Always reference the key explicitly.
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: db-backup
+spec:
+  provider:
+    kubernetes:
+      remoteNamespace: cnpg-system
+      # The "remote" API server is this cluster's own. Without a caProvider ESO
+      # falls back to the system root store, which does not contain the cluster CA,
+      # and the store never becomes Ready ("unable to create client"). kube-root-ca.crt
+      # is projected into every namespace by the API server, so this needs nothing
+      # provisioned.
+      server:
+        url: https://kubernetes.default.svc
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          namespace: cnpg-system
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: eso-db-backup-reader
+          namespace: cnpg-system

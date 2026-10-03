@@ -1,0 +1,38 @@
+---
+# The Kyverno policy that gives every CNPG database a backup destination, kept in
+# its own stack rather than with the governance baseline because of what it must
+# wait for.
+#
+# A generate rule's TARGET kind has to be resolvable when the policy is admitted:
+# Kyverno tolerates an unknown kind in a `match` block (it warns and stays Ready),
+# but it rejects a generate rule outright -- "failed to get GVR for kind
+# external-secrets.io/v1/ExternalSecret". On a fresh cluster the governance stack
+# lands long before ESO or the barman plugin, so the policy has to sit behind both
+# CRD owners instead.
+#
+# Putting it here rather than adding those dependencies to kyverno-policies keeps
+# restricted Pod Security, required resources and no-:latest enforcing from the
+# moment Kyverno is up, instead of waiting on a database operator to install.
+#
+# retryInterval because the expected ordering failure is now designed out, and a
+# surprise one should cost seconds rather than the 10m reconcile interval -- the
+# gap that turned this into a red CI run rather than a blip.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cnpg-backup-destination
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 30s
+  path: ./flux/cluster/cnpg-backup-destination
+  prune: true
+  wait: true
+  dependsOn:
+    - name: kyverno
+    - name: eso
+    - name: cloudnative-pg-barman
+  sourceRef:
+    kind: ${source_kind}
+    name: ${source_name}
+    namespace: flux-system

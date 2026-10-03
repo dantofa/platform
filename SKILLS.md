@@ -170,10 +170,14 @@ bootstrapped more than once with different per-environment flags.
 Verification is **cluster-type-agnostic**: `just cluster verify health` (all nodes
 Ready + the whole GitOps tree reconciled), plus `backup|restore|db-backup|image-scan`
 and `just cluster debug`, all act on whatever `$KUBECONFIG` points at. `db-backup` is
-the CNPG one: it archives a throwaway database through the barman-cloud plugin,
-destroys it, recovers it from object storage and asserts the row comes back — the
-recovery path that is yours, not Velero's. It defaults to the cluster's own backup
-target; point `DB_BACKUP_*` at your own bucket and key to run it anywhere else. So a downstream
+the CNPG one: it declares a `Cluster` and nothing else, so it also proves the
+destination the platform generates for you works — archive, destroy, recover, assert
+the row comes back, then rotate the backup credential and assert a running database
+follows it. That is the recovery path that is yours, not Velero's, and it needs no
+configuration on either cluster type. One caveat: the rotation half rewrites the
+credential every database on the cluster shares, so archiving fails cluster-wide for
+about half a minute — pass `DB_DRILL_SKIP_ROTATION=1` on a cluster carrying databases
+you cannot disturb. So a downstream
 e2e differs between local and DOKS by only the lifecycle line — connect, then run
 the same gates.
 
@@ -384,26 +388,38 @@ database itself is simply absent. Bring it back by letting Flux re-apply your `C
 with a `bootstrap.recovery` stanza pointing at your own WAL archive; nothing needs to be
 deleted or untangled first.
 
-What that leaves you: **database recovery is yours — and the platform gives you the
-bucket to do it with.** Every cluster is provisioned with a database-backup bucket
-separate from Velero's, published in `cnpg-system` as:
+What that leaves you: **recovery is yours to run, but the destination is already
+there.** Declare a `Cluster` with the plugin as WAL archiver and nothing else:
 
-- `db-backup-target` (ConfigMap: `bucket`, `region`, `endpoint`)
-- `db-backup-credential` (Secret: `ACCESS_KEY_ID`, `ACCESS_SECRET_KEY` — the discrete
-  keys an `ObjectStore` selects)
+```yaml
+spec:
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: db-backup
+```
 
-Point an `ObjectStore` at those, set `plugins: [{name: barman-cloud.cloudnative-pg.io,
-isWALArchiver: true, parameters: {barmanObjectName: …}}]` on your `Cluster`, and you have
-PITR. Use a destination prefix of your own under the bucket.
+The platform generates the rest into your namespace the moment that `Cluster` appears:
+an `ObjectStore` called **`db-backup`** pointing at a database-backup bucket separate
+from Velero's, and the credential it needs, materialized by ESO and kept in step when
+the platform rotates the key. No copying, no bucket coordinates to look up, and nothing
+to redo after a rotation.
 
-Do **not** use Velero's `backup-credential` instead: it is a credentials *file* the
-plugin cannot read, and it is ReadWrite on the cluster's disaster-recovery bucket.
+It is generated a few seconds *after* your `Cluster`, so the first WAL archive attempts
+may fail and retry. That is expected; CNPG converges on its own. If
+`ContinuousArchiving` never goes true, look at the `ExternalSecret` and `ObjectStore`
+in your namespace — in that order.
 
-Two things to know while this beds in. The bucket is **shared by every database on the
-cluster**, so anything with the credential can read and delete another database's
-backups — fine for first-party consumers, not a tenancy boundary. And the Secret
-currently lives only in `cnpg-system`: copy it into your own namespace until the
-platform clones it for you. Without any of this, a destroyed cluster means a lost
+Two properties to know. The bucket is **shared by every database on the cluster**, so
+anything holding the credential can read and delete another database's backups — fine
+for first-party consumers, not a tenancy boundary. And the archive lives under a prefix
+per namespace, with your `Cluster`'s name below it, so two databases never write into
+one server directory.
+
+Never point a `Cluster` at Velero's `backup-credential` instead: it is a credentials
+*file* the plugin cannot read, and it is ReadWrite on the cluster's disaster-recovery
+bucket. Without any backup configured at all, a destroyed cluster means a lost
 database, however green the Velero backups look.
 
 The exclusion is by object, not by volume name, so it covers volumes you add later —

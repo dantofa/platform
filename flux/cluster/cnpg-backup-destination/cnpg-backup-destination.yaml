@@ -1,0 +1,104 @@
+---
+# Give every CNPG database a working backup destination, without anyone wiring one
+# up and without Kyverno ever reading a Secret.
+#
+# #62 provisions the bucket and publishes the contract in cnpg-system
+# (db-backup-target + db-backup-credential). Neither a Secret nor an ObjectStore
+# crosses namespaces, though, so a `Cluster` in its own namespace still needed both
+# copied in by hand -- and a hand-copied credential goes stale the next time the
+# Spaces key is rotated.
+#
+# Two generated objects close that, both triggered by a `Cluster`:
+#
+#   1. an ExternalSecret asking the platform's db-backup store for the credential.
+#      ESO materializes it and keeps it in step with rotation. Kyverno writes the
+#      request; it never reads the secret material.
+#   2. an ObjectStore beside it, with bucket and endpoint read from the contract
+#      ConfigMap rather than hardcoded, so no two namespaces can disagree about
+#      where backups go.
+#
+# Why the split. Cloning the Secret with Kyverno would need `list` on Secrets, and
+# `list` takes no resourceNames -- the smallest possible grant is every Secret in
+# every namespace (Kyverno's policy validator refuses the rule without it). Routing
+# the copy through ESO keeps the only secret-reading grant at `get` on one name in
+# one namespace (see eso-config/db-backup-reader-rbac.yaml), and leaves Kyverno with
+# CRD writes it can be scoped to precisely.
+#
+# destinationPath is per NAMESPACE, not per cluster: the barman plugin already
+# separates databases by serverName underneath it, so a namespace-level path keeps
+# one ObjectStore serving every `Cluster` there instead of the two rules fighting
+# over one object's spec. Shared bucket, so this is not a tenancy boundary -- every
+# database on the cluster can reach every other prefix.
+#
+# generateExisting so a database that predates the policy is adopted, rather than
+# being the one that still needs manual wiring.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: cnpg-provide-backup-destination
+spec:
+  background: true
+  generateExisting: true
+  rules:
+    - name: request-db-backup-credential
+      match:
+        any:
+          - resources:
+              kinds:
+                - postgresql.cnpg.io/v1/Cluster
+      generate:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        name: db-backup-credential
+        namespace: "{{request.object.metadata.namespace}}"
+        synchronize: true
+        data:
+          spec:
+            # Short on purpose. dctl rotates by storing the new key and only then
+            # revoking the old one, so between those two moments every copy of the
+            # credential is dead: WAL archiving fails and WAL piles up on the
+            # instance's volume until ESO refreshes. An hour of that is an outage; a
+            # few minutes is a blip. The cost is one API read per database per
+            # interval, against a Secret in this same cluster.
+            refreshInterval: 5m
+            secretStoreRef:
+              kind: ClusterSecretStore
+              name: db-backup
+            target:
+              name: db-backup-credential
+            # An explicit key, never ESO's find/regex lookup: find needs `list`,
+            # which cannot be name-restricted.
+            dataFrom:
+              - extract:
+                  key: db-backup-credential
+    - name: generate-object-store
+      match:
+        any:
+          - resources:
+              kinds:
+                - postgresql.cnpg.io/v1/Cluster
+      context:
+        - name: dbTarget
+          configMap:
+            name: db-backup-target
+            namespace: cnpg-system
+      generate:
+        apiVersion: barmancloud.cnpg.io/v1
+        kind: ObjectStore
+        name: db-backup
+        namespace: "{{request.object.metadata.namespace}}"
+        synchronize: true
+        data:
+          spec:
+            configuration:
+              destinationPath: "s3://{{dbTarget.data.bucket}}/{{request.object.metadata.namespace}}"
+              endpointURL: "{{dbTarget.data.endpoint}}"
+              s3Credentials:
+                accessKeyId:
+                  name: db-backup-credential
+                  key: ACCESS_KEY_ID
+                secretAccessKey:
+                  name: db-backup-credential
+                  key: ACCESS_SECRET_KEY
+              wal:
+                compression: gzip

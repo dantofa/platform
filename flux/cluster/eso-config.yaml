@@ -6,6 +6,15 @@
 # dependsOn eso breaks that. substituteFrom cluster-vars fills the store's
 # ${bitwarden_org_id}/${bitwarden_project_id} (dctl writes them from
 # $BWS_ORGANIZATION_ID/$BWS_PROJECT_ID). Source-agnostic like its siblings.
+#
+# retryInterval: 30s for the same reason as cnpg-backup-destination's. dependsOn
+# eso only waits for the Helm release to be Ready, not for its validating webhook
+# to actually be serving TLS yet — ClusterSecretStore/db-backup's dry-run can hit
+# that gap and get "context deadline exceeded" calling
+# external-secrets-webhook. The expected ordering failure is transient; without
+# this it costs the full 10m reconcile interval, which is what turned that race
+# into a red CI run (ingress and echo dependsOn this stack in turn, so the delay
+# cascades).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -13,6 +22,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m
+  retryInterval: 30s
   path: ./flux/cluster/eso-config
   prune: true
   wait: true

@@ -76,12 +76,22 @@ type UpdateSpec struct {
 	HA           bool
 }
 
+// AssociatedResources are the DO Volumes, Volume Snapshots, and Load Balancers
+// a cluster's PVCs and Services provisioned -- exactly what DO's plain cluster
+// delete leaves behind as orphaned, billed resources (see DeleteCluster).
+type AssociatedResources struct {
+	VolumeIDs         []string
+	VolumeSnapshotIDs []string
+	LoadBalancerIDs   []string
+}
+
 // ClusterAPI is the DO cluster surface this package depends on.
 type ClusterAPI interface {
 	List(ctx context.Context) ([]Cluster, error)
 	Create(ctx context.Context, spec CreateSpec) (Cluster, error)
 	Update(ctx context.Context, id string, spec UpdateSpec) (Cluster, error)
-	Delete(ctx context.Context, id string) error
+	AssociatedResources(ctx context.Context, id string) (AssociatedResources, error)
+	DeleteSelective(ctx context.Context, id string, resources AssociatedResources) error
 	Get(ctx context.Context, id string) (Cluster, error)
 	GetKubeconfig(ctx context.Context, id string) (string, error)
 }
@@ -223,8 +233,12 @@ func WaitForRunning(ctx context.Context, client ClusterAPI, name string, timeout
 	}
 }
 
-// DeleteCluster deletes the named cluster. Idempotent: a missing cluster is a
-// no-op. Returns the resolved id, or "" if none existed.
+// DeleteCluster deletes the named cluster together with its associated
+// resources (Volumes, Volume Snapshots, LoadBalancers) in the same call -- a
+// plain delete leaves those behind as orphaned, billed resources, since
+// DigitalOcean never reaps a PVC's Volume or a Service's LoadBalancer on its
+// own. Not a caller choice: every deletion reaps them. Idempotent: a missing
+// cluster is a no-op. Returns the resolved id, or "" if none existed.
 func DeleteCluster(ctx context.Context, client ClusterAPI, name string) (string, error) {
 	clusters, err := client.List(ctx)
 	if err != nil {
@@ -234,7 +248,11 @@ func DeleteCluster(ctx context.Context, client ClusterAPI, name string) (string,
 	if !ok {
 		return "", nil
 	}
-	if err := client.Delete(ctx, existing.ID); err != nil {
+	resources, err := client.AssociatedResources(ctx, existing.ID)
+	if err != nil {
+		return "", err
+	}
+	if err := client.DeleteSelective(ctx, existing.ID, resources); err != nil {
 		return "", err
 	}
 	return existing.ID, nil

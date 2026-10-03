@@ -92,7 +92,15 @@ never enters the cluster); on kind both come from `flux/local`.
 
 **Two buckets, two shapes.** Bootstrap also provisions `<cluster>-db-backup` with its
 own bucket-scoped key and writes `db-backup-target` + `db-backup-credential` into
-`cnpg-system` for CNPG `ObjectStore`s. Separate from Velero's by design: that key is
+`cnpg-system` for CNPG `ObjectStore`s. A downstream never copies either: the
+`cnpg-provide-backup-destination` Kyverno policy generates an `ObjectStore` and an
+`ExternalSecret` into any namespace where a `Cluster` appears, and the **second
+`ClusterSecretStore` (`db-backup`, ESO's `kubernetes` provider over `cnpg-system`)**
+materializes the credential. Kyverno deliberately writes the *request* rather than
+cloning the Secret: a clone needs `list` on Secrets, which takes no `resourceNames`, so
+the smallest grant would be every Secret in every namespace — whereas ESO's reader needs
+only `get` on the one name. Keep consumers on an explicit `dataFrom.extract.key`; ESO's
+`find` lookup needs `list` and would undo that. Separate from Velero's by design: that key is
 ReadWrite on the cluster's disaster-recovery bucket, so a database able to reach it
 could delete the cluster's backups. The shapes differ too — Velero reads one
 credentials-*file* key, the barman plugin reads discrete `ACCESS_KEY_ID`/

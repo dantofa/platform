@@ -118,13 +118,45 @@ func (c *ClusterClient) Update(ctx context.Context, id string, spec core.UpdateS
 	return toCoreCluster(cl), nil
 }
 
-// Delete deletes a cluster by id.
-func (c *ClusterClient) Delete(ctx context.Context, id string) error {
-	_, err := c.godo.Kubernetes.Delete(ctx, id)
+// AssociatedResources lists the Volumes, Volume Snapshots, and LoadBalancers
+// DigitalOcean provisioned for the cluster's PVCs and Services -- exactly what
+// a plain cluster delete would otherwise leave behind.
+func (c *ClusterClient) AssociatedResources(ctx context.Context, id string) (core.AssociatedResources, error) {
+	res, _, err := c.godo.Kubernetes.ListAssociatedResourcesForDeletion(ctx, id)
+	if err != nil {
+		return core.AssociatedResources{}, apiError(err)
+	}
+	return core.AssociatedResources{
+		VolumeIDs:         resourceIDs(res.Volumes),
+		VolumeSnapshotIDs: resourceIDs(res.VolumeSnapshots),
+		LoadBalancerIDs:   resourceIDs(res.LoadBalancers),
+	}, nil
+}
+
+// DeleteSelective deletes a cluster together with the given associated
+// resources, so the Volumes/LoadBalancers it provisioned don't outlive it as
+// orphaned, billed resources.
+func (c *ClusterClient) DeleteSelective(ctx context.Context, id string, resources core.AssociatedResources) error {
+	_, err := c.godo.Kubernetes.DeleteSelective(ctx, id, &godo.KubernetesClusterDeleteSelectiveRequest{
+		Volumes:         resources.VolumeIDs,
+		VolumeSnapshots: resources.VolumeSnapshotIDs,
+		LoadBalancers:   resources.LoadBalancerIDs,
+	})
 	if err != nil {
 		return apiError(err)
 	}
 	return nil
+}
+
+func resourceIDs(resources []*godo.AssociatedResource) []string {
+	ids := make([]string, 0, len(resources))
+	for _, r := range resources {
+		if r == nil {
+			continue
+		}
+		ids = append(ids, r.ID)
+	}
+	return ids
 }
 
 // Get returns a single cluster (including status.state).
