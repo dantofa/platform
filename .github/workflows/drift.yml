@@ -1,0 +1,54 @@
+---
+# Periodic drift audit (issue #65): `cluster delete` already reaps a
+# cluster's own Volumes/VolumeSnapshots/LoadBalancers on teardown (see
+# internal/core/digitalocean/clusters.go), but that invariant can't catch a
+# leak from outside that path -- a process killed between create and a later
+# delete, or a resource created outside dctl entirely. This lists every DO
+# Volume/VolumeSnapshot/LoadBalancer account-wide and fails the job if any
+# belong to no currently-live cluster.
+name: drift
+on:
+  schedule:
+    - cron: "0 7 * * 1" # every Monday 07:00 UTC
+  workflow_dispatch: {}
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  NO_COLOR: "1"
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: preview
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'go.sum', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # bws injects only the DigitalOcean token (DIGITALOCEAN_ACCESS_TOKEN) from
+      # the shared secrets project. The report (ids, names, sizes, regions) lands
+      # in this step's log; the command exits non-zero whenever it is non-empty,
+      # failing this job so a scheduled-run notification is the alert.
+      - name: Audit for orphaned Volumes/Snapshots/LoadBalancers
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: >-
+          nix develop --command
+          bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
+          nix run .#default -- digitalocean cluster audit

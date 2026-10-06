@@ -50,6 +50,7 @@ func newClusterCmd() *cobra.Command {
 		newClusterConnectCmd(&token),
 		newClusterDeleteCmd(&token),
 		newClusterBootstrapCmd(&token),
+		newClusterAuditCmd(&token),
 	)
 	return cluster
 }
@@ -489,5 +490,39 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 	f.StringVar(&namespace, "namespace", "velero", "Namespace for the credential Secret and coordinates ConfigMap (where Velero runs); created if absent.")
 	f.StringVar(&secretName, "secret-name", "", "Credential Secret name (default "+doclient.DefaultSecretName+").")
 	f.StringVar(&configMapName, "configmap-name", "", "Coordinates ConfigMap name (default "+doclient.DefaultConfigMapName+").")
+	return cmd
+}
+
+func newClusterAuditCmd(token *string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "audit",
+		Short: "Audit the account for Volumes/Snapshots/LoadBalancers orphaned from every live cluster.",
+		Long: "List every DO Volume, Volume Snapshot, and LoadBalancer account-wide and " +
+			"report whichever belong to no currently-live cluster. `cluster delete` " +
+			"already reaps a cluster's own associated resources on teardown, so this " +
+			"catches what that doesn't cover: a process killed between create and a " +
+			"later delete, or a resource created outside dctl entirely. Exits non-zero " +
+			"when drift is found, so a scheduled job can gate on it.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := doclient.NewClusterClient(*token)
+			if err != nil {
+				return render.Fail(err)
+			}
+			report, ok, err := docore.AuditDrift(cmd.Context(), client)
+			if err != nil {
+				return render.Fail(err)
+			}
+			if err := render.JSON(report); err != nil {
+				return err
+			}
+			// The report is already printed; a non-empty one is a non-zero exit
+			// without re-printing (mirrors `flux kustomization verify`).
+			if !ok {
+				return render.ErrHandled
+			}
+			return nil
+		},
+	}
 	return cmd
 }
