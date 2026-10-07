@@ -1,4 +1,10 @@
 ---
+# Safety net for `cnpg.yml`'s `pitr` job -- the only workflow left that
+# provisions a real, billed DOKS cluster (preview/update/velero's drills run on
+# kind; see the `reduce-doks-ci-cost` migration). `cluster delete` and `space
+# unlink` are both idempotent/best-effort, so this is cheap to run unconditionally
+# even when `pitr` was skipped (no manifest/drill change) and never created
+# anything.
 name: teardown
 on:
   pull_request:
@@ -7,7 +13,7 @@ permissions: {}
 env:
   FORCE_COLOR: ""
   NO_COLOR: "1"
-  CLUSTER_NAME: saas-preview-${{ github.event.pull_request.number }}
+  CLUSTER_NAME: platform-cnpg-${{ github.event.pull_request.number }}
 jobs:
   teardown:
     runs-on: ubuntu-latest
@@ -40,7 +46,7 @@ jobs:
       # package; the shell's allowUnfree predicate covers bws). It injects the
       # DigitalOcean token, then runs the shipped dctl (the flake artifact via
       # `nix run .#default`, not `uv run`) to guarantee teardown.
-      - name: Destroy preview cluster
+      - name: Destroy cnpg cluster
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
@@ -48,7 +54,7 @@ jobs:
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
           nix run .#default -- digitalocean cluster delete "$CLUSTER_NAME"
 
-      # Safety net for the backup bucket + scoped key (best-effort: the preview
+      # Safety net for the backup bucket + scoped key (best-effort: the pitr
       # job cleans these up itself, but a cancelled run may not have).
       - name: Tear down backup buckets
         if: always()
