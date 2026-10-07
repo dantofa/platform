@@ -25,9 +25,10 @@ env:
   FORCE_COLOR: ""
   CLUSTER_NAME: platform-cnpg-${{ github.event.pull_request.number }}
   BASE_DOMAIN: cnpg.dantofa.dev
-  # nyc3 has intermittently lacked s-2vcpu-4gb capacity; override here rather
-  # than in dctl's --region default so only CI is pinned to nyc2.
-  DOKS_REGION: nyc2
+  # nyc3 and nyc2 have both intermittently lacked s-2vcpu-4gb capacity;
+  # override here rather than in dctl's --region default so only CI is
+  # pinned to atl1.
+  DOKS_REGION: atl1
 jobs:
   detect:
     runs-on: ubuntu-latest
