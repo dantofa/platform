@@ -24,3 +24,14 @@ CVE-2025-68121
 # never grant an untrusted principal the StorageClass-creating API access this
 # needs to exploit. Tracked in ROADMAP.md.
 CVE-2025-62878
+
+# proxy-addr (IP spoofing via IPv4-mapped IPv6 trust subnets, fixed upstream in
+# proxy-addr 2.0.8) -- transitive via Express in mendhak/http-https-echo.
+# Confirmed empirically: tag 42 (the latest, bumped from 41 for this) still
+# bundles the vulnerable proxy-addr; the image doesn't pin its Express
+# dependency tightly enough to have picked up the fix yet. Also not exploitable
+# as configured: the vulnerable path requires an IPv4-mapped IPv6 trust-proxy
+# subnet, and flux/echo/deployment.yaml sets TRUST_PROXY=true (trust all), not
+# a subnet list. Disposable CI test backend regardless, never user-facing.
+# Tracked in ROADMAP.md.
+CVE-2026-90711

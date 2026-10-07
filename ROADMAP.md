@@ -33,7 +33,8 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
 - Update Alpine OpenSSL base image in trivy-operator and Zitadel charts once CVE-2026-31789 patches are released; remove entry from `.trivyignore-cluster`
 - Update Zitadel chart once CVE-2026-41242 (protobufjs) is patched upstream; remove entry from `.trivyignore-cluster`
 - Update the external-secrets bitwarden-sdk-server image once CVE-2025-68121 (Go stdlib) is patched upstream; remove entry from `.trivyignore-cluster`
-- Pick up a `kind` release bundling `rancher/local-path-provisioner` >= v0.0.34 (CVE-2025-62878, path traversal via StorageClass `parameters.pathPattern`) via `just update`'s nixpkgs bump; remove entry from `.trivyignore-cluster` (the two CRITICALs currently suppressed by `local.yml`'s image-security gate)
+- Pick up a `kind` release bundling `rancher/local-path-provisioner` >= v0.0.34 (CVE-2025-62878, path traversal via StorageClass `parameters.pathPattern`) via `just update`'s nixpkgs bump; remove entry from `.trivyignore-cluster`
+- Bump `mendhak/http-https-echo` past tag 42 once it ships a build whose Express pulls in proxy-addr >= 2.0.8 (CVE-2026-90711, IP spoofing via IPv4-mapped IPv6 trust subnets); remove entry from `.trivyignore-cluster` (the three CRITICALs currently suppressed by `local.yml`'s image-security gate)
 - Broaden automated secret rotation beyond Zitadel to the platform's own credentials: the Bitwarden machine-account token (ESO secret-zero), the DigitalOcean API token, and the Cloudflare API token
 - Configure Cloudflare edge security to complement the origin IP allowlist: WAF managed rules, rate limiting, and bot management
 - Establish the platform's own compliance/audit posture (we sell ISO compliance): periodic access reviews, immutable audit logging for admin/operator actions, and a documented data-handling and retention policy

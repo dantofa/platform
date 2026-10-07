@@ -39,6 +39,15 @@ spec:
     remediation:
       retries: 3
   values:
+    # Explicit pin, not just the chart's appVersion fallback: two independent CI
+    # runs on a fresh cluster still deployed v3.7.6 after the chart bump to
+    # 41.6.1 above (confirmed via the downloaded chart tarball that 41.6.1's own
+    # values.yaml/templates correctly default image.tag to appVersion v3.7.13 --
+    # so the indirection through HelmRepository/HelmChart is where the staleness
+    # is, not the chart content or our version pin). Pinning the tag directly
+    # here bypasses that layer entirely.
+    image:
+      tag: "v3.7.13"
     ingressClass:
       enabled: true
       isDefaultClass: true
