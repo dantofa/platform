@@ -1,21 +1,32 @@
 ---
-name: local
-# Temporarily manual-only while we provision larger runners: the 3-node kind
-# cluster plus Kyverno starves SeaweedFS on the default runner, failing the
-# Velero backup. Restore `pull_request` once bigger runners are available.
+# The consolidated, always-on-every-PR platform gate. Bootstraps the full
+# flux/cluster + flux/local stack on kind and proves: Flux reconciliation,
+# the Cloudflare-Tunnel ingress e2e path (echo), Velero backup + restore, CNPG
+# point-in-time recovery, and the Trivy image-scan gate -- the role
+# `preview.yml` used to cover on a real, billed DOKS cluster (removed; see the
+# `reduce-doks-ci-cost` migration, prompted by DOKS compute cost far exceeding
+# runner cost). `update.yml`/`velero.yml` similarly moved their drills here;
+# `cnpg.yml`'s `pitr` job is the one remaining real-DOKS job, kept specifically
+# to exercise a real Spaces bucket + bucket-scoped key.
+#
+# Needs noble-32 (8-core/32GB): the 3-node kind cluster plus the full
+# cert-manager/ESO/Velero/Kyverno/Trivy/ingress stack starves SeaweedFS on the
+# default runner, failing the Velero backup.
 on:
-  workflow_dispatch:
+  pull_request:
 permissions: {}
 env:
   FORCE_COLOR: ""
   NO_COLOR: "1"
   KUBECONFIG: .kubeconfig
+  BASE_DOMAIN: local.dantofa.dev
   CONTROL: "1" # kind control-plane nodes
   WORKERS: "2" # kind worker nodes
 jobs:
   local:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: noble-32
+    timeout-minutes: 60
+    environment: preview
     permissions:
       contents: read
     steps:
@@ -45,32 +56,98 @@ jobs:
           nix run .#default -- local cluster list | grep -q '"local"'
           nix run .#default -- local cluster connect
           nix develop --command kubectl wait --for=condition=Ready nodes --all --timeout=180s
-            count=$(nix develop --command kubectl get nodes -o name | wc -l)
+          count=$(nix develop --command kubectl get nodes -o name | wc -l)
           test "$count" -eq "$((CONTROL + WORKERS))"
           curl -fsS http://localhost:5001/v2/ > /dev/null
 
       # bootstrap is self-contained: it publishes the flux/ tree, installs Flux,
       # and wires the OCIRepository/Kustomization (a separate `push` is only for
-      # iterating on edits afterwards).
+      # iterating on edits afterwards). The bitwarden secret-zero is needed here
+      # because the ingress-tunnel layer's ExternalSecret reads the real
+      # Cloudflare Tunnel token from it -- everything else this job exercises
+      # (Velero/CNPG backup credentials) comes from flux/local's static values
+      # instead, per the platform's two-ClusterSecretStore split. No `bws run`
+      # wrapper needed (unlike the DOKS workflows): there is no DIGITALOCEAN_
+      # ACCESS_TOKEN to inject, so the raw BWS_ACCESS_TOKEN secret is passed
+      # straight through to dctl's own $BWS_ACCESS_TOKEN fallback.
       - name: Bootstrap the backup stack
-        run: nix run .#default -- local cluster bootstrap --base-domain local.dantofa.dev
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          BWS_PROJECT_ID: ${{ vars.BWS_PROJECT_ID }}
+          BWS_ORGANIZATION_ID: ${{ vars.BWS_ORGANIZATION_ID }}
+        run: >-
+          nix run .#default -- local cluster bootstrap --base-domain "$BASE_DOMAIN"
+          --metrics-remote
+          --bitwarden-token "$BWS_ACCESS_TOKEN"
+          --bitwarden-project-id "$BWS_PROJECT_ID" --bitwarden-org-id "$BWS_ORGANIZATION_ID"
 
       # Gate on the whole GitOps tree reconciling (generous timeout for cold
-      # image pulls) before checking the backup itself.
+      # image pulls) before checking anything downstream of it.
       - name: Verify Kustomizations reconciled
         run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
 
+      # Full end-to-end proof: hit the echo backend through the real Cloudflare
+      # Tunnel (the same ingress path local dev and DOKS-without---dolb use).
+      # ${BASE_DOMAIN} resolves to 127.0.0.1 via a real public DNS record (see
+      # the Cloudflare-managed wildcard, not an /etc/hosts entry), so this is a
+      # plain curl of the real URL -- same probe as `just local-e2e`.
+      - name: Test echo service
+        run: |
+          retries=24
+          sleep=10
+          url="http://${BASE_DOMAIN}/echo"
+          for i in $(seq 1 ${retries}); do
+            if body="$(curl -fsS --max-time 8 "$url")" \
+              && printf '%s' "$body" | grep -q "${BASE_DOMAIN}"; then
+              echo "e2e OK: echo reachable via ${url}"
+              printf '%s\n' "$body"
+              exit 0
+            fi
+            echo "attempt ${i}/${retries}: not ready, retrying in ${sleep}s..."
+            sleep ${sleep}
+          done
+          echo "e2e FAILED: ${url} did not serve echo within $((retries * sleep))s"
+          exit 1
+
       - name: Verify Velero backup
         run: nix develop --command just cluster verify backup
+
+      # Proves a backup can actually be RESTORED, not just taken.
+      - name: Verify Velero restore
+        run: nix develop --command just cluster verify restore
 
       # The other half of recovery. Velero owns the objects around a database and
       # deliberately not its contents, so this covers what that leaves: archive a
       # throwaway database through the barman-cloud plugin, destroy it, recover it
       # from object storage, assert the row comes back. It runs on kind because the
       # in-cluster SeaweedFS store already has the discrete S3 keys the plugin
-      # needs; the DOKS equivalent waits on the DB-backup bucket (#53).
+      # needs; the real-Spaces equivalent runs in `cnpg.yml`.
       - name: Verify CNPG point-in-time recovery
         run: nix develop --command just cluster verify db-backup
+
+      # Image security gate: fail on unsuppressed CRITICAL CVEs in the platform
+      # images we deploy (trivy-operator VulnerabilityReports vs
+      # .trivyignore-cluster). Placed last so trivy-operator has had the whole
+      # run to scan before the gate reads its reports.
+      - name: Verify image scan (Trivy vulnerability gate)
+        run: nix develop --command just cluster verify image-scan
+
+      # On failure, snapshot in-cluster state before the delete below tears it
+      # down, so the failure can still be diagnosed afterwards.
+      - name: Capture failure diagnostics
+        if: failure()
+        run: |
+          mkdir -p local-diagnostics
+          nix develop --command just cluster debug > local-diagnostics/cluster-debug.txt 2>&1 || true
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-diagnostics-${{ github.event.pull_request.number }}
+          path: local-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Delete local cluster
         if: always()
