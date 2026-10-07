@@ -113,7 +113,7 @@ func newClusterCreateCmd(token *string) *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&name, "name", "", "Cluster name.")
 	_ = cmd.MarkFlagRequired("name")
-	f.StringVar(&region, "region", "nyc2", "Region slug, e.g. nyc2.")
+	f.StringVar(&region, "region", "nyc3", "Region slug, e.g. nyc3.")
 	f.StringVar(&version, "version", "latest", `Kubernetes version slug, or "latest".`)
 	f.StringVar(&poolSize, "node-pool-size", "s-2vcpu-4gb", "Primary node pool droplet size slug.")
 	f.IntVar(&poolCount, "node-pool-count", 2, "Initial node count.")
