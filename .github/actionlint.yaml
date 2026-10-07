@@ -1,0 +1,8 @@
+---
+# actionlint doesn't know about GitHub-hosted "larger runners" -- they're not in
+# its built-in label list because they're configured per-account/org, not a
+# fixed GitHub product tier. Declare ours here so `runs-on: noble-32` lints
+# clean instead of tripping the unknown-label check.
+self-hosted-runner:
+  labels:
+    - noble-32

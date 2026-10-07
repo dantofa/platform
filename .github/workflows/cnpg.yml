@@ -11,9 +11,12 @@
 #
 # Runs on every PR (no `paths:` filter) so the `cnpg` gate always reports a status
 # -- a path-filtered required check stalls PRs forever. The expensive `pitr` job is
-# skipped internally unless the CNPG manifests or the drill itself change
-# (flux/cluster/cloudnative-pg*, cluster.just). Make the `cnpg` job the required
-# status check.
+# skipped internally unless the CNPG manifests, the drill, or the DO/Spaces client
+# code change (flux/cluster/cloudnative-pg*, cluster.just,
+# internal/{core,clients}/digitalocean/**). Make the `cnpg` job the required
+# status check. This is now the ONLY workflow that provisions a real, billed DOKS
+# cluster -- preview/update/velero's drills moved to kind; see the
+# `reduce-doks-ci-cost` migration.
 name: cnpg
 on:
   pull_request:
@@ -22,6 +25,9 @@ env:
   FORCE_COLOR: ""
   CLUSTER_NAME: platform-cnpg-${{ github.event.pull_request.number }}
   BASE_DOMAIN: cnpg.dantofa.dev
+  # nyc3 has intermittently lacked s-2vcpu-4gb capacity; override here rather
+  # than in dctl's --region default so only CI is pinned to nyc2.
+  DOKS_REGION: nyc2
 jobs:
   detect:
     runs-on: ubuntu-latest
@@ -30,7 +36,7 @@ jobs:
     outputs:
       cnpg: ${{ steps.filter.outputs.cnpg }}
     steps:
-      - name: Detect CNPG manifest or drill changes
+      - name: Detect CNPG manifest, drill, or DO/Spaces client changes
         id: filter
         env:
           GH_TOKEN: ${{ github.token }}
@@ -41,8 +47,10 @@ jobs:
           files="$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')"
           # The drill lives in cluster.just, so a change to it must be exercised too
           # -- otherwise the test that proves recovery works is the one thing never
-          # tested on DOKS.
-          if printf '%s\n' "$files" | grep -qE '^(flux/cluster/cloudnative-pg(-barman)?(\.yaml$|/)|cluster\.just$)'; then
+          # tested on DOKS. Same reasoning for the DO/Spaces client code: this is
+          # the only job left that exercises a real bucket-scoped key, so a
+          # regression there must not slip through on manifest-only path filters.
+          if printf '%s\n' "$files" | grep -qE '^(flux/cluster/cloudnative-pg(-barman)?(\.yaml$|/)|cluster\.just$|internal/(core|clients)/digitalocean/)'; then
             echo "cnpg=true" >> "$GITHUB_OUTPUT"
           else
             echo "cnpg=false" >> "$GITHUB_OUTPUT"
@@ -91,7 +99,7 @@ jobs:
         run: >-
           nix develop --command
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
-          nix run .#default -- digitalocean cluster create --name "$CLUSTER_NAME" --wait
+          nix run .#default -- digitalocean cluster create --name "$CLUSTER_NAME" --region "$DOKS_REGION" --wait
 
       - name: Tag cnpg cluster
         env:
