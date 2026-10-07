@@ -1,8 +1,9 @@
 # .trivyignore-cluster -- accepted CRITICAL CVEs for the platform's own images
-# (images we deploy), enforced by `just verify-image-scan`, the preview
-# image-security gate. DOKS-managed images (kube-system) are out of scope, and
-# only CRITICAL is gated -- HIGH findings are visibility-only (trivy-operator
-# dashboards + Renovate chart bumps), so they are not listed here.
+# (images we deploy), enforced by `just cluster verify image-scan`, the
+# image-security gate run from `local.yml`. DOKS-managed images (kube-system)
+# are out of scope, and only CRITICAL is gated -- HIGH findings are
+# visibility-only (trivy-operator dashboards + Renovate chart bumps), so they
+# are not listed here.
 #
 # One CVE ID per line; `#` comments. Every entry needs a reason and a ROADMAP.md
 # tracking item so it is removed once the chart ships a fixed image. Any new,
@@ -12,3 +13,14 @@
 # release predating the fix; no patched chart image is available yet. Renovate
 # bumps the external-secrets chart when one ships. Tracked in ROADMAP.md.
 CVE-2025-68121
+
+# rancher/local-path-provisioner (path traversal via StorageClass
+# parameters.pathPattern, fixed in v0.0.34) -- this is kind's own bundled
+# default-StorageClass image, not something any chart or manifest in this repo
+# pins; the fix ships only via a newer `kind` release picked up by bumping the
+# Nix-pinned nixpkgs (`just update`), a separate, deliberate operation. Not
+# shipped to users: it exists only on the ephemeral, single-tenant, torn-down-
+# after-use kind clusters `local.yml`/`just cluster local` provision, which
+# never grant an untrusted principal the StorageClass-creating API access this
+# needs to exploit. Tracked in ROADMAP.md.
+CVE-2025-62878

@@ -24,8 +24,10 @@ spec:
     spec:
       containers:
         - name: echo
-          # Exact pin; bumped by Renovate.
-          image: mendhak/http-https-echo:41
+          # Exact pin; bumped by Renovate. Manually bumped ahead of Renovate
+          # here for CVE-2026-90711 (proxy-addr IP spoofing via IPv4-mapped
+          # IPv6 trust subnets, unsuppressed CRITICAL on tag 41).
+          image: mendhak/http-https-echo:42
           imagePullPolicy: IfNotPresent
           env:
             - name: HTTP_PORT
