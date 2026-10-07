@@ -86,6 +86,15 @@ jobs:
       - name: Verify Kustomizations reconciled
         run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
 
+      # TEMPORARY: direct visibility into why the Traefik HelmRelease keeps
+      # deploying v3.7.6 despite an explicit image.tag: v3.7.13 pin in its
+      # values. Remove once that's root-caused.
+      - name: Debug Traefik HelmRelease state
+        run: |
+          nix develop --command kubectl -n traefik get helmrelease traefik -o yaml
+          nix develop --command kubectl get helmchart -A -o yaml
+          nix develop --command kubectl -n traefik get pods -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.spec.containers[*].image}{"\n"}{end}'
+
       # Full end-to-end proof: hit the echo backend through the real Cloudflare
       # Tunnel (the same ingress path local dev and DOKS-without---dolb use).
       # ${BASE_DOMAIN} resolves to 127.0.0.1 via a real public DNS record (see
