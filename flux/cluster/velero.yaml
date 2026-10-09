@@ -6,8 +6,11 @@
 # bootstrapped). Its own substituteFrom binds the SeaweedFS/Spaces coordinates
 # from the backup-target ConfigMap, which the root ordering guarantees exists
 # first (local: the local-requirements root; DOKS: `dctl do cluster bootstrap`).
-# CI proves this stack works via `just cluster verify backup|restore` (the velero
-# workflow's backup job, gated on changes under flux/cluster/velero).
+# CI proves this stack works via `just cluster verify backup|restore`, run from
+# `local.yml` on every PR.
+#
+# wait: true so a terminal HelmRelease (not just a slow one) is caught by the
+# verify gate instead of reporting Ready the moment the manifests are applied.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -17,6 +20,7 @@ spec:
   interval: 10m
   path: ./flux/cluster/velero
   prune: true
+  wait: true
   sourceRef:
     kind: ${source_kind}
     name: ${source_name}

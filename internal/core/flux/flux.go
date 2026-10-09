@@ -843,20 +843,64 @@ func RemoveKustomization(ctx context.Context, e Engine, name string) error {
 	return e.DeleteKustomization(ctx, name)
 }
 
-// KustomizationStatus is one Flux Kustomization's reconciliation state. Status is
-// the kstatus verdict (Current/InProgress/Failed/...); Ready is the gate.
+// KustomizationStatus is one Flux Kustomization's reconciliation state. Status
+// is the kstatus verdict (Current/InProgress/Failed/...); Ready is the gate.
+// Message is kstatus's own synthesized text, which describes the object (e.g.
+// a generation/observedGeneration mismatch) rather than the failure; when
+// Flux has written one, ConditionMessage is the Ready condition's own message
+// -- the actual reason, once a health check has run long enough to record it.
 type KustomizationStatus struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	Status    string `json:"status"`
-	Ready     bool   `json:"ready"`
-	Message   string `json:"message,omitempty"`
+	Namespace        string `json:"namespace"`
+	Name             string `json:"name"`
+	Status           string `json:"status"`
+	Ready            bool   `json:"ready"`
+	Message          string `json:"message,omitempty"`
+	ConditionMessage string `json:"condition_message,omitempty"`
 }
 
 // KustomizationStatuser reads the reconciliation status of the Flux
 // Kustomizations on a cluster (satisfied by the kube adapter, via kstatus).
 type KustomizationStatuser interface {
 	KustomizationStatuses(ctx context.Context, namespace string) ([]KustomizationStatus, error)
+}
+
+// HelmReleaseStatus is one Flux HelmRelease's reconciliation state, scoped to
+// what a verify wait needs to fail fast: Terminal is true when the release
+// has failed outright (an install/upgrade/uninstall that will not self-heal)
+// rather than merely progressing. Reason/Message are the Ready condition's
+// own, and Events carries the namespace's recent Warning events when
+// Terminal -- often the only place the underlying cause (e.g. an admission
+// webhook refusal) is recorded.
+type HelmReleaseStatus struct {
+	Namespace string   `json:"namespace"`
+	Name      string   `json:"name"`
+	Reason    string   `json:"reason,omitempty"`
+	Message   string   `json:"message,omitempty"`
+	Terminal  bool     `json:"terminal"`
+	Events    []string `json:"events,omitempty"`
+}
+
+// HelmReleaseStatuser reads the reconciliation status of the Flux
+// HelmReleases on a cluster (satisfied by the kube adapter).
+type HelmReleaseStatuser interface {
+	HelmReleaseStatuses(ctx context.Context, namespace string) ([]HelmReleaseStatus, error)
+}
+
+// TerminalHelmReleaseError reports a HelmRelease that failed terminally under
+// a waited-on Kustomization -- the cause a verify timeout would otherwise
+// swallow, attached directly instead of requiring a diagnostics artifact.
+type TerminalHelmReleaseError struct {
+	Namespace, Name, Reason, Message string
+	Events                           []string
+}
+
+func (e *TerminalHelmReleaseError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "HelmRelease %s/%s failed terminally (%s): %s", e.Namespace, e.Name, e.Reason, e.Message)
+	for _, ev := range e.Events {
+		fmt.Fprintf(&b, "\n  %s", ev)
+	}
+	return b.String()
 }
 
 // ListKustomizations returns every Kustomization's status (never nil, so an empty
@@ -892,7 +936,14 @@ func VerifyKustomizations(ctx context.Context, s KustomizationStatuser, namespac
 // is ready or the timeout elapses, returning the last statuses + ok either way
 // (so a timed-out gate still reports what is not reconciled). It turns the
 // snapshot gate into a convergence gate for CI after a bootstrap/apply.
-func VerifyKustomizationsWait(ctx context.Context, s KustomizationStatuser, namespace string, timeout, interval time.Duration) (statuses []KustomizationStatus, ok bool, err error) {
+//
+// hs, when non-nil, is checked on every poll for a terminally-failed
+// HelmRelease (one that will not self-heal, as opposed to one still
+// progressing) and returns immediately with a TerminalHelmReleaseError the
+// moment one appears -- instead of waiting out the rest of timeout only to
+// report a generic "did not become ready" with the real cause left in Flux's
+// own conditions. Pass nil to skip this (the plain Kustomization-only wait).
+func VerifyKustomizationsWait(ctx context.Context, s KustomizationStatuser, hs HelmReleaseStatuser, namespace string, timeout, interval time.Duration) (statuses []KustomizationStatus, ok bool, err error) {
 	deadline := time.Now().Add(timeout)
 	// lastErr holds a transient failure so it can still be reported if the wait
 	// ends without ever recovering. A dropped connection mid-wait must not end the
@@ -916,6 +967,11 @@ func VerifyKustomizationsWait(ctx context.Context, s KustomizationStatuser, name
 			// spend the caller's whole timeout to report the same thing.
 			return nil, false, err
 		}
+		if hs != nil {
+			if termErr := terminalHelmReleaseErr(ctx, hs, namespace); termErr != nil {
+				return statuses, false, termErr
+			}
+		}
 		if !time.Now().Before(deadline) {
 			return statuses, ok && lastErr == nil, lastErr
 		}
@@ -925,6 +981,28 @@ func VerifyKustomizationsWait(ctx context.Context, s KustomizationStatuser, name
 		case <-time.After(interval):
 		}
 	}
+}
+
+// terminalHelmReleaseErr returns the first terminally-failed HelmRelease as an
+// error, or nil if none is found. A read error is swallowed rather than
+// propagated: this is a best-effort fail-fast layered on top of the
+// Kustomization-level wait above, which already has its own retry/timeout
+// handling for a transient API hiccup -- this check must not short-circuit
+// that on a blip of its own.
+func terminalHelmReleaseErr(ctx context.Context, hs HelmReleaseStatuser, namespace string) error {
+	statuses, err := hs.HelmReleaseStatuses(ctx, namespace)
+	if err != nil {
+		return nil
+	}
+	for _, s := range statuses {
+		if s.Terminal {
+			return &TerminalHelmReleaseError{
+				Namespace: s.Namespace, Name: s.Name,
+				Reason: s.Reason, Message: s.Message, Events: s.Events,
+			}
+		}
+	}
+	return nil
 }
 
 // Bootstrap installs Flux, registers the source (oci or git per src.Type), writes
