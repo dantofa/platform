@@ -159,6 +159,106 @@ func resourceIDs(resources []*godo.AssociatedResource) []string {
 	return ids
 }
 
+// ListVolumes returns every block-storage Volume in the account -- not just
+// those attached to a cluster. It backs the drift audit's account-wide side.
+func (c *ClusterClient) ListVolumes(ctx context.Context) ([]core.Volume, error) {
+	opts := &godo.ListVolumeParams{ListOptions: &godo.ListOptions{Page: 1, PerPage: perPage}}
+	var volumes []core.Volume
+	for {
+		page, resp, err := c.godo.Storage.ListVolumes(ctx, opts)
+		if err != nil {
+			return nil, apiError(err)
+		}
+		for _, v := range page {
+			volumes = append(volumes, toCoreVolume(v))
+		}
+		if resp == nil || resp.Links == nil || resp.Links.IsLastPage() {
+			break
+		}
+		next, err := resp.Links.CurrentPage()
+		if err != nil {
+			return nil, err
+		}
+		opts.ListOptions.Page = next + 1
+	}
+	return volumes, nil
+}
+
+// ListVolumeSnapshots returns every volume snapshot in the account.
+func (c *ClusterClient) ListVolumeSnapshots(ctx context.Context) ([]core.VolumeSnapshot, error) {
+	opts := &godo.ListOptions{Page: 1, PerPage: perPage}
+	var snapshots []core.VolumeSnapshot
+	for {
+		page, resp, err := c.godo.Snapshots.ListVolume(ctx, opts)
+		if err != nil {
+			return nil, apiError(err)
+		}
+		for _, s := range page {
+			snapshots = append(snapshots, toCoreSnapshot(s))
+		}
+		if resp == nil || resp.Links == nil || resp.Links.IsLastPage() {
+			break
+		}
+		next, err := resp.Links.CurrentPage()
+		if err != nil {
+			return nil, err
+		}
+		opts.Page = next + 1
+	}
+	return snapshots, nil
+}
+
+// ListLoadBalancers returns every Load Balancer in the account.
+func (c *ClusterClient) ListLoadBalancers(ctx context.Context) ([]core.LoadBalancer, error) {
+	opts := &godo.ListOptions{Page: 1, PerPage: perPage}
+	var loadBalancers []core.LoadBalancer
+	for {
+		page, resp, err := c.godo.LoadBalancers.List(ctx, opts)
+		if err != nil {
+			return nil, apiError(err)
+		}
+		for _, lb := range page {
+			loadBalancers = append(loadBalancers, toCoreLoadBalancer(lb))
+		}
+		if resp == nil || resp.Links == nil || resp.Links.IsLastPage() {
+			break
+		}
+		next, err := resp.Links.CurrentPage()
+		if err != nil {
+			return nil, err
+		}
+		opts.Page = next + 1
+	}
+	return loadBalancers, nil
+}
+
+func toCoreVolume(v godo.Volume) core.Volume {
+	out := core.Volume{ID: v.ID, Name: v.Name, SizeGigaBytes: v.SizeGigaBytes}
+	if v.Region != nil {
+		out.Region = v.Region.Slug
+	}
+	if !v.CreatedAt.IsZero() {
+		out.CreatedAt = v.CreatedAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+	return out
+}
+
+func toCoreSnapshot(s godo.Snapshot) core.VolumeSnapshot {
+	out := core.VolumeSnapshot{ID: s.ID, Name: s.Name, CreatedAt: s.Created}
+	if len(s.Regions) > 0 {
+		out.Region = s.Regions[0]
+	}
+	return out
+}
+
+func toCoreLoadBalancer(lb godo.LoadBalancer) core.LoadBalancer {
+	out := core.LoadBalancer{ID: lb.ID, Name: lb.Name, CreatedAt: lb.Created}
+	if lb.Region != nil {
+		out.Region = lb.Region.Slug
+	}
+	return out
+}
+
 // Get returns a single cluster (including status.state).
 func (c *ClusterClient) Get(ctx context.Context, id string) (core.Cluster, error) {
 	cl, _, err := c.godo.Kubernetes.Get(ctx, id)

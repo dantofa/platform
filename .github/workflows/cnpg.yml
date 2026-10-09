@@ -25,9 +25,14 @@ env:
   FORCE_COLOR: ""
   CLUSTER_NAME: platform-cnpg-${{ github.event.pull_request.number }}
   BASE_DOMAIN: cnpg.dantofa.dev
-  # nyc3 has intermittently lacked s-2vcpu-4gb capacity; override here rather
-  # than in dctl's --region default so only CI is pinned to nyc2.
-  DOKS_REGION: nyc2
+  # nyc3, nyc2, and atl1 have all hit insufficient s-2vcpu-4gb capacity;
+  # override here rather than in dctl's --region default so only CI is
+  # pinned to sfo2 -- geographically farthest from the NYC metro cluster
+  # the first two share, same price as every other region ($24/mo, DO
+  # doesn't price Droplets per-region), and a standard-tier region that
+  # actually lists s-2vcpu-4gb (unlike atl1, which doesn't appear in that
+  # size's regions list on the Sizes API at all).
+  DOKS_REGION: sfo2
 jobs:
   detect:
     runs-on: ubuntu-latest

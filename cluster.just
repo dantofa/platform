@@ -6,6 +6,7 @@
 #   just cluster local  create|verify|delete|test   # kind cluster lifecycle
 #   just cluster local  ca                          # export the local TLS trust anchor
 #   just cluster doks   create|bootstrap|connect|delete|list  # DOKS cluster lifecycle
+#   just cluster doks   audit                          # audit for orphaned Volumes/Snapshots/LBs
 #
 # Distributed via the platform Nix flake (`packages.cluster-just`): the platform
 # imports it directly; a downstream repo materializes it (flake output / the devbox
@@ -645,6 +646,19 @@ cluster-doks-list:
   # shellcheck disable=SC2206
   dctl=(${DCTL:-nix run github:dantofa/platform#default --})
   "${dctl[@]}" digitalocean cluster list
+
+# Audit the account for Volumes, Volume Snapshots, and LoadBalancers that belong
+# to no currently-live cluster -- account-wide like `cluster doks list`, not
+# scoped to ${DOKS_CLUSTER}. `cluster doks delete` already reaps a cluster's own
+# associated resources on teardown; this catches what that invariant can't (a
+# process killed between create and a later delete, a resource created outside
+# dctl entirely). Exits non-zero when anything is found. Uses $DCTL.
+cluster-doks-audit:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  # shellcheck disable=SC2206
+  dctl=(${DCTL:-nix run github:dantofa/platform#default --})
+  "${dctl[@]}" digitalocean cluster audit
 
 # Fetch the cluster's kubeconfig so the cluster-type-agnostic recipes
 # (`cluster verify health|backup|restore|image-scan`, `cluster debug`) can run
