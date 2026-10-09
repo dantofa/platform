@@ -62,6 +62,8 @@ jobs:
     environment: preview
     permissions:
       contents: read
+    outputs:
+      baseline_failed: ${{ steps.flag-baseline-failure.outputs.failed }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -110,7 +112,22 @@ jobs:
             --bitwarden-project-id "$BWS_PROJECT_ID" --bitwarden-org-id "$BWS_ORGANIZATION_ID"
 
       - name: Verify the master baseline converges
-        run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
+        id: verify-baseline
+        run: nix run .#default -- flux kustomization verify --wait --timeout 900s --kubeconfig .kubeconfig
+
+      # A failure here means the PR was never actually tested -- master itself
+      # didn't converge on a fresh cluster, for reasons that have nothing to do
+      # with this PR's changes. Flag it distinctly (both as a run annotation and
+      # a job output the `update` gate reads) so a red check here reads as "the
+      # platform is flaky, re-run" rather than "this PR broke the upgrade" --
+      # conflating the two trains the exact reflex that makes the gate
+      # worthless the day it catches a real break.
+      - name: Flag a baseline failure
+        id: flag-baseline-failure
+        if: failure() && steps.verify-baseline.outcome == 'failure'
+        run: |
+          echo "::warning::The master baseline failed to converge before this PR's revision was even applied -- a platform/infrastructure flake, not something this PR broke. See 'Verify the master baseline converges' for the real cause."
+          echo "failed=true" >> "$GITHUB_OUTPUT"
 
       # Phase 2: restore the PR's own flux/ tree and re-publish -- `local cluster
       # push` packages the new OCI digest and blocks on Flux's OCIRepository
@@ -125,7 +142,7 @@ jobs:
       # A failure here is an immutable-field/prune/CRD-upgrade break that a
       # fresh-cluster test (local.yml) would not catch.
       - name: Verify the PR upgrade converges
-        run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
+        run: nix run .#default -- flux kustomization verify --wait --timeout 900s --kubeconfig .kubeconfig
 
       # On failure, snapshot in-cluster state before the delete below tears it
       # down, so the failure can still be diagnosed afterwards.
@@ -163,6 +180,7 @@ jobs:
           DETECT_RESULT: ${{ needs.detect.result }}
           UPGRADE_RESULT: ${{ needs.upgrade.result }}
           FLUX_CHANGED: ${{ needs.detect.outputs.flux }}
+          BASELINE_FAILED: ${{ needs.upgrade.outputs.baseline_failed }}
         run: |
           if [ "$DETECT_RESULT" != "success" ]; then
             echo "change detection failed (result=$DETECT_RESULT)"; exit 1
@@ -171,5 +189,11 @@ jobs:
             success|skipped)
               echo "upgrade gate OK (upgrade=$UPGRADE_RESULT, flux-changed=$FLUX_CHANGED)" ;;
             *)
-              echo "upgrade verification did not pass (result=$UPGRADE_RESULT)"; exit 1 ;;
+              if [ "$BASELINE_FAILED" = "true" ]; then
+                echo "::warning::upgrade failed because the MASTER BASELINE never converged -- a platform/infrastructure flake, not this PR. Re-run rather than treating this as a real upgrade break."
+                echo "upgrade gate: baseline flake, PR unjudged (upgrade=$UPGRADE_RESULT, flux-changed=$FLUX_CHANGED)"
+              else
+                echo "upgrade verification did not pass (result=$UPGRADE_RESULT)"
+              fi
+              exit 1 ;;
           esac
