@@ -4,6 +4,9 @@
 # the other shared stacks its sourceRef is source-agnostic — the
 # ${source_kind}/${source_name} placeholders are filled by the root's
 # postBuild.substituteFrom the cluster-vars ConfigMap.
+#
+# wait: true so a terminal HelmRelease (not just a slow one) is caught by the
+# verify gate instead of reporting Ready the moment the manifests are applied.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -13,6 +16,7 @@ spec:
   interval: 10m
   path: ./flux/cluster/trivy
   prune: true
+  wait: true
   sourceRef:
     kind: ${source_kind}
     name: ${source_name}

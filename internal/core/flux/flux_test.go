@@ -553,7 +553,7 @@ func TestVerifyKustomizationsWaitConverges(t *testing.T) {
 		statuses:   []KustomizationStatus{{Name: "platform", Status: "InProgress", Ready: false}},
 		readyAfter: 2, // not ready on the first poll, ready on the second
 	}
-	_, ok, err := VerifyKustomizationsWait(context.Background(), f, "", time.Second, time.Millisecond)
+	_, ok, err := VerifyKustomizationsWait(context.Background(), f, nil, "", time.Second, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +569,7 @@ func TestVerifyKustomizationsWaitTimesOut(t *testing.T) {
 	f := &fakeKustomizationStatuser{
 		statuses: []KustomizationStatus{{Name: "velero", Status: "Failed", Ready: false}},
 	}
-	statuses, ok, err := VerifyKustomizationsWait(context.Background(), f, "", 20*time.Millisecond, time.Millisecond)
+	statuses, ok, err := VerifyKustomizationsWait(context.Background(), f, nil, "", 20*time.Millisecond, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +587,7 @@ func TestVerifyKustomizationsWaitSurvivesTransientError(t *testing.T) {
 		errOn:      map[int]error{2: &url.Error{Op: "Get", URL: "https://x/apis", Err: io.EOF}},
 		readyAfter: 3,
 	}
-	statuses, ok, err := VerifyKustomizationsWait(context.Background(), f, "", time.Second, time.Millisecond)
+	statuses, ok, err := VerifyKustomizationsWait(context.Background(), f, nil, "", time.Second, time.Millisecond)
 	if err != nil {
 		t.Fatalf("a dropped connection must not fail the wait: %v", err)
 	}
@@ -603,7 +603,7 @@ func TestVerifyKustomizationsWaitReportsPersistentTransientError(t *testing.T) {
 	// Never recovering is still a failure — the caller must be told why, not
 	// handed a silent not-ready.
 	f := &fakeKustomizationStatuser{err: &url.Error{Op: "Get", Err: io.EOF}}
-	_, ok, err := VerifyKustomizationsWait(context.Background(), f, "", 20*time.Millisecond, time.Millisecond)
+	_, ok, err := VerifyKustomizationsWait(context.Background(), f, nil, "", 20*time.Millisecond, time.Millisecond)
 	if err == nil {
 		t.Fatal("expected the last transient error to surface on timeout")
 	}
@@ -620,7 +620,7 @@ func TestVerifyKustomizationsWaitFailsFastOnDefinitiveError(t *testing.T) {
 	// spend the caller's whole timeout to report the same thing.
 	sentinel := errors.New(`kustomizations is forbidden: User cannot list resource`)
 	f := &fakeKustomizationStatuser{err: sentinel}
-	if _, _, err := VerifyKustomizationsWait(context.Background(), f, "", time.Minute, time.Millisecond); !errors.Is(err, sentinel) {
+	if _, _, err := VerifyKustomizationsWait(context.Background(), f, nil, "", time.Minute, time.Millisecond); !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want %v", err, sentinel)
 	}
 	if f.calls != 1 {
@@ -635,9 +635,128 @@ func TestVerifyKustomizationsWaitKeepsLastGoodReport(t *testing.T) {
 		statuses: []KustomizationStatus{{Name: "velero", Status: "Failed", Ready: false}},
 		errOn:    map[int]error{2: io.EOF, 3: io.EOF, 4: io.EOF, 5: io.EOF},
 	}
-	statuses, _, _ := VerifyKustomizationsWait(context.Background(), f, "", 15*time.Millisecond, time.Millisecond)
+	statuses, _, _ := VerifyKustomizationsWait(context.Background(), f, nil, "", 15*time.Millisecond, time.Millisecond)
 	if len(statuses) != 1 || statuses[0].Name != "velero" {
 		t.Errorf("expected the last good report to survive, got %v", statuses)
+	}
+}
+
+// fakeHelmReleaseStatuser returns a fixed set of statuses on every call,
+// optionally becoming terminal only from a given call number on (0 = never),
+// to simulate a release that starts healthy/progressing and later fails.
+type fakeHelmReleaseStatuser struct {
+	statuses   []HelmReleaseStatus
+	err        error
+	terminalAt int
+	calls      int
+}
+
+func (f *fakeHelmReleaseStatuser) HelmReleaseStatuses(context.Context, string) ([]HelmReleaseStatus, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.terminalAt > 0 && f.calls >= f.terminalAt {
+		out := make([]HelmReleaseStatus, len(f.statuses))
+		for i, s := range f.statuses {
+			s.Terminal = true
+			out[i] = s
+		}
+		return out, nil
+	}
+	return f.statuses, nil
+}
+
+func TestVerifyKustomizationsWaitFailsFastOnTerminalHelmRelease(t *testing.T) {
+	// The Kustomization itself would wait out the whole timeout (never reports
+	// ready), but the HelmRelease underneath it is already terminal -- the
+	// wait must return immediately with the cause attached, not after 1 minute.
+	ks := &fakeKustomizationStatuser{
+		statuses: []KustomizationStatus{{Name: "cert-manager", Status: "InProgress", Ready: false}},
+	}
+	hs := &fakeHelmReleaseStatuser{statuses: []HelmReleaseStatus{{
+		Namespace: "cert-manager", Name: "cert-manager",
+		Reason: "InstallFailed", Message: "failed calling webhook \"validate.kyverno.svc-fail\"",
+		Terminal: true,
+	}}}
+	start := time.Now()
+	_, ok, err := VerifyKustomizationsWait(context.Background(), ks, hs, "", time.Minute, time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("expected an immediate fail-fast, took %v", elapsed)
+	}
+	if ok {
+		t.Error("expected not ok")
+	}
+	var termErr *TerminalHelmReleaseError
+	if !errors.As(err, &termErr) {
+		t.Fatalf("expected a *TerminalHelmReleaseError, got %v", err)
+	}
+	if termErr.Name != "cert-manager" || termErr.Reason != "InstallFailed" {
+		t.Errorf("unexpected error contents: %+v", termErr)
+	}
+}
+
+func TestVerifyKustomizationsWaitIgnoresNonTerminalHelmRelease(t *testing.T) {
+	// A release still progressing must not trip the fail-fast; the wait
+	// proceeds to normal convergence.
+	ks := &fakeKustomizationStatuser{
+		statuses:   []KustomizationStatus{{Name: "cert-manager", Status: "InProgress", Ready: false}},
+		readyAfter: 2,
+	}
+	hs := &fakeHelmReleaseStatuser{statuses: []HelmReleaseStatus{{
+		Namespace: "cert-manager", Name: "cert-manager", Reason: "Progressing", Terminal: false,
+	}}}
+	_, ok, err := VerifyKustomizationsWait(context.Background(), ks, hs, "", time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("expected ok once the Kustomization converged")
+	}
+}
+
+func TestVerifyKustomizationsWaitSurvivesHelmReleaseReadError(t *testing.T) {
+	// A transient failure reading HelmReleases must not abort the wait --
+	// only the Kustomization-level polling owns retry/timeout semantics.
+	ks := &fakeKustomizationStatuser{
+		statuses:   []KustomizationStatus{{Name: "cert-manager", Status: "InProgress", Ready: false}},
+		readyAfter: 2,
+	}
+	hs := &fakeHelmReleaseStatuser{err: io.EOF}
+	_, ok, err := VerifyKustomizationsWait(context.Background(), ks, hs, "", time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatalf("a HelmRelease read error must not fail the wait: %v", err)
+	}
+	if !ok {
+		t.Error("expected ok once the Kustomization converged")
+	}
+}
+
+func TestVerifyKustomizationsWaitNilHelmReleaseStatuserSkipsCheck(t *testing.T) {
+	ks := &fakeKustomizationStatuser{
+		statuses:   []KustomizationStatus{{Name: "cert-manager", Status: "InProgress", Ready: false}},
+		readyAfter: 2,
+	}
+	_, ok, err := VerifyKustomizationsWait(context.Background(), ks, nil, "", time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("expected ok once the Kustomization converged")
+	}
+}
+
+func TestTerminalHelmReleaseErrorMessage(t *testing.T) {
+	err := &TerminalHelmReleaseError{
+		Namespace: "cert-manager", Name: "cert-manager",
+		Reason: "InstallFailed", Message: "boom",
+		Events: []string{"FailedWebhook: connection refused"},
+	}
+	msg := err.Error()
+	for _, want := range []string{"cert-manager/cert-manager", "InstallFailed", "boom", "FailedWebhook: connection refused"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message %q missing %q", msg, want)
+		}
 	}
 }
 

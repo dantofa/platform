@@ -84,7 +84,7 @@ jobs:
       # Gate on the whole GitOps tree reconciling (generous timeout for cold
       # image pulls) before checking anything downstream of it.
       - name: Verify Kustomizations reconciled
-        run: nix run .#default -- flux kustomization verify --wait --timeout 600s --kubeconfig .kubeconfig
+        run: nix run .#default -- flux kustomization verify --wait --timeout 900s --kubeconfig .kubeconfig
 
       # Full end-to-end proof: hit the echo backend through the real Cloudflare
       # Tunnel (the same ingress path local dev and DOKS-without---dolb use).

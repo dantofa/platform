@@ -198,7 +198,7 @@ func newKustomizationVerifyCmd(kubeconfig *string) *cobra.Command {
 				ok       bool
 			)
 			if wait {
-				statuses, ok, err = fluxcore.VerifyKustomizationsWait(cmd.Context(), kc, namespace, timeout, 5*time.Second)
+				statuses, ok, err = fluxcore.VerifyKustomizationsWait(cmd.Context(), kc, kc, namespace, timeout, 5*time.Second)
 			} else {
 				statuses, ok, err = fluxcore.VerifyKustomizations(cmd.Context(), kc, namespace)
 			}
