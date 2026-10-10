@@ -139,6 +139,30 @@ spec:
   create` rewrites the whole source, so a later call without them leaves it
   unauthenticated — pass them on every invocation.
 
+### Continuous image delivery
+
+Flux's image-reflector and image-automation controllers are installed on every
+cluster — build and push your image, and the cluster picks up the new tag itself.
+Declare the three CRDs in your own reconcile root:
+
+- An `ImageRepository` watching your registry.
+- An `ImagePolicy` selecting a tag from it (e.g. `policy.semver` or `policy.numerical`).
+- An `ImageUpdateAutomation` that commits the resolved tag back into your manifests.
+
+This replaces reimplementing the same build → push → commit-a-tag-bump CI step
+yourself, and the git write credential it would otherwise need in your app repo.
+
+Two things that are easy to miss:
+
+- `ImageUpdateAutomation` only works against a **git** source — it has nothing to
+  write to on an OCI one. If your own reconcile root's source is `--type oci` (the
+  kind default), register a `--type git` source for it instead (see above);
+  independent of what the platform cluster itself bootstrapped with.
+- It authenticates by reusing your source's own credential — the same
+  `--token`/`--secret-ref` Secret `dctl flux source create` already mints, no
+  separate write credential to provision. That credential needs **write** scope on
+  the repo for this to work, not just the read scope a plain checkout needs.
+
 ## Cluster lifecycle
 
 Use `dctl` directly, or the shared `cluster.just` module — import it (materialized to
