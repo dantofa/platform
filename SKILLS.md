@@ -361,6 +361,20 @@ second copy collides with everyone else's on a shared cluster. Declare your own 
 CR in your own reconcile root, the same split as prometheus-operator (platform ships the
 CRDs, you ship the `ServiceMonitor`).
 
+**Declaring a `Cluster` means owning its image CVEs.** The platform's own image-scan gate
+(`.trivyignore-cluster`) never pre-suppresses the postgres runtime image
+(`ghcr.io/cloudnative-pg/postgresql`) or the barman-cloud plugin sidecar — it ships the
+operator only and never pulls either image itself, so there is nothing to suppress until
+your `Cluster` pulls them into your own cluster. The gate is inherited, so once it does,
+`trivy-operator` scans them under your cluster's rules. Add any CRITICALs to your own
+`.trivyignore-cluster` with a reason and tracking item, exactly as the gate's own failure
+message instructs — do this before your first `Cluster` rollout, not after it fails cold.
+
+The operator exposes its own controller-runtime metrics via a `PodMonitor` (Alloy
+auto-discovers it; no action needed). Your `Cluster`'s own per-instance Postgres metrics
+are a separate switch — set `monitoring.enablePodMonitor: true` on the `Cluster` spec to
+get them.
+
 The barman-cloud plugin is the supported path to PITR — CNPG 1.26+ moved backup support
 out of the core operator into a CNPG-I plugin. The in-tree `backup.barmanObjectStore`
 field is still present in the `Cluster` CRD and still works in 1.30, but it is deprecated
