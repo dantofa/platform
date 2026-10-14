@@ -29,6 +29,14 @@ spec:
     remediation:
       retries: 3
   values:
+    # The operator's own controller-runtime metrics (not a downstream Cluster's
+    # per-instance Postgres metrics -- that stays each Cluster's own
+    # enablePodMonitor switch, same split as every other platform-ships-the-
+    # CRDs stack). Alloy already discovers PodMonitors
+    # (prometheusOperatorObjects.enabled: true in k8s-monitoring), so this is
+    # the only piece needed to make the operator visible.
+    monitoring:
+      podMonitorEnabled: true
     # Bound the controller's footprint: it lands on every cluster type, kind
     # included.
     resources:
