@@ -23,6 +23,13 @@
 # postgresql.cnpg.io. What it buys is an honest Ready: without it the cluster root
 # and `flux kustomization verify` report a converged tree while the operator is
 # still starting.
+#
+# dependsOn prometheus-operator-crds: the chart's monitoring.podMonitorEnabled
+# renders a PodMonitor, and Helm's install validates every object in the release
+# against the API server's discovery cache -- without the CRD established first,
+# install fails outright ("no matches for kind PodMonitor ... ensure CRDs are
+# installed first") rather than just leaving the object unreconciled. Same
+# ordering k8s-monitoring already depends on prometheus-operator-crds for.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -33,6 +40,8 @@ spec:
   path: ./flux/cluster/cloudnative-pg
   prune: true
   wait: true
+  dependsOn:
+    - name: prometheus-operator-crds
   sourceRef:
     kind: ${source_kind}
     name: ${source_name}
