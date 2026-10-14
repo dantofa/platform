@@ -42,6 +42,30 @@ func TestGitSourceArgs(t *testing.T) {
 	}
 }
 
+func TestInstallArgsAlwaysIncludesImageAutomation(t *testing.T) {
+	cases := []struct {
+		name    string
+		version string
+		want    string
+	}{
+		{
+			name: "no version",
+			want: "install --components-extra=image-reflector-controller,image-automation-controller",
+		},
+		{
+			name: "pinned version", version: "v2.3.0",
+			want: "install --components-extra=image-reflector-controller,image-automation-controller --version v2.3.0",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := joined(installArgs(tc.version)); got != tc.want {
+				t.Errorf("installArgs(%q) =\n%s\nwant:\n%s", tc.version, got, tc.want)
+			}
+		})
+	}
+}
+
 // --insecure is an OCI-only flag; the git source has no such option and would be
 // rejected by the flux CLI, so Insecure must not leak across the two builders.
 func TestGitSourceArgsIgnoresInsecure(t *testing.T) {

@@ -57,11 +57,24 @@ func (c *Client) run(ctx context.Context, args ...string) error {
 // Install installs the Flux controllers. An empty version uses the flux CLI's
 // own version; otherwise the given version's components are installed.
 func (c *Client) Install(ctx context.Context, version string) error {
-	args := []string{"install"}
+	return c.run(ctx, installArgs(version)...)
+}
+
+// installArgs builds the `flux install` invocation. Always installs the
+// image-reflector and image-automation controllers alongside Flux's default
+// set (source/kustomize/helm/notification) -- not a caller choice, so every
+// cluster type gets continuous image delivery uniformly rather than some
+// clusters having it and others not. Each costs the same requests as any
+// other controller (100m CPU / 64Mi memory, per Flux's own install
+// manifests), so this is not a disproportionate addition. A downstream still
+// opts in per-app by declaring its own ImageRepository/ImagePolicy/
+// ImageUpdateAutomation; installing the controllers only makes that possible.
+func installArgs(version string) []string {
+	args := []string{"install", "--components-extra=image-reflector-controller,image-automation-controller"}
 	if version != "" {
 		args = append(args, "--version", version)
 	}
-	return c.run(ctx, args...)
+	return args
 }
 
 // CreateGitSource registers (create-or-update) a GitRepository source.
