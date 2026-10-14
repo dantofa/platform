@@ -15,9 +15,15 @@ type fakeClusterAPI struct {
 	created             CreateSpec
 	updatedID           string
 	updateSpec          UpdateSpec
-	associatedResources AssociatedResources // returned by AssociatedResources
-	deletedID           string
-	deletedResources    AssociatedResources // passed to DeleteSelective
+	associatedResources AssociatedResources // returned by AssociatedResources when associatedResourcesSequence is nil
+	// associatedResourcesSequence, when set, returns a different result per
+	// AssociatedResources call (by call number, 1-indexed; clamped to the last
+	// entry past the end) -- simulates a resource that only appears once DO's
+	// enumeration catches up on a later poll.
+	associatedResourcesSequence []AssociatedResources
+	associatedResourcesCalls    int
+	deletedID                   string
+	deletedResources            AssociatedResources // passed to DeleteSelective
 }
 
 func (f *fakeClusterAPI) List(context.Context) ([]Cluster, error) { return f.clusters, nil }
@@ -32,7 +38,15 @@ func (f *fakeClusterAPI) Update(_ context.Context, id string, spec UpdateSpec) (
 }
 
 func (f *fakeClusterAPI) AssociatedResources(_ context.Context, _ string) (AssociatedResources, error) {
-	return f.associatedResources, nil
+	f.associatedResourcesCalls++
+	if f.associatedResourcesSequence == nil {
+		return f.associatedResources, nil
+	}
+	idx := f.associatedResourcesCalls - 1
+	if idx >= len(f.associatedResourcesSequence) {
+		idx = len(f.associatedResourcesSequence) - 1
+	}
+	return f.associatedResourcesSequence[idx], nil
 }
 
 func (f *fakeClusterAPI) DeleteSelective(_ context.Context, id string, resources AssociatedResources) error {
@@ -94,14 +108,26 @@ func TestUpdateClusterNotFound(t *testing.T) {
 	}
 }
 
+// testPollAttempts/testPollInterval keep the poll tests fast: real production
+// use (DefaultAssociatedResourcesPoll{Attempts,Interval}) is 3 attempts over a
+// deliberate 5s gap, which would make every test calling DeleteCluster take
+// ~10s if used directly.
+const (
+	testPollAttempts = 3
+	testPollInterval = time.Millisecond
+)
+
 func TestDeleteClusterIdempotent(t *testing.T) {
 	f := &fakeClusterAPI{}
-	id, err := DeleteCluster(context.Background(), f, "ghost")
+	id, err := DeleteCluster(context.Background(), f, "ghost", testPollAttempts, testPollInterval)
 	if err != nil || id != "" {
 		t.Fatalf("missing cluster should be a no-op, got id=%q err=%v", id, err)
 	}
+	if f.associatedResourcesCalls != 0 {
+		t.Errorf("a missing cluster must not poll AssociatedResources, got %d calls", f.associatedResourcesCalls)
+	}
 	f.clusters = []Cluster{{ID: "id-9", Name: "prod"}}
-	id, err = DeleteCluster(context.Background(), f, "prod")
+	id, err = DeleteCluster(context.Background(), f, "prod", testPollAttempts, testPollInterval)
 	if err != nil || id != "id-9" || f.deletedID != "id-9" {
 		t.Fatalf("expected id-9 deleted, got id=%q deleted=%q err=%v", id, f.deletedID, err)
 	}
@@ -115,13 +141,81 @@ func TestDeleteClusterReapsAssociatedResources(t *testing.T) {
 			LoadBalancerIDs: []string{"lb-1"},
 		},
 	}
-	if _, err := DeleteCluster(context.Background(), f, "prod"); err != nil {
+	if _, err := DeleteCluster(context.Background(), f, "prod", testPollAttempts, testPollInterval); err != nil {
 		t.Fatal(err)
 	}
 	want := AssociatedResources{VolumeIDs: []string{"vol-1", "vol-2"}, LoadBalancerIDs: []string{"lb-1"}}
 	if !reflect.DeepEqual(f.deletedResources, want) {
 		t.Errorf("DeleteSelective got resources %+v, want %+v", f.deletedResources, want)
 	}
+}
+
+// The actual bug this guards against: a Volume provisioned moments before
+// delete (e.g. a CNPG PITR drill's PVC) that DO's AssociatedResources
+// enumeration had not yet indexed on the first call, but had by a later one.
+// A single-call DeleteCluster would have deleted the cluster without this
+// Volume, leaking it exactly as happened on three real CI runs.
+func TestDeleteClusterUnionsResourcesAcrossPolls(t *testing.T) {
+	f := &fakeClusterAPI{
+		clusters: []Cluster{{ID: "id-9", Name: "prod"}},
+		associatedResourcesSequence: []AssociatedResources{
+			{VolumeIDs: []string{"vol-1"}},               // 1st poll: misses the late volume
+			{VolumeIDs: []string{"vol-1", "vol-2-late"}}, // 2nd poll: DO caught up
+			{VolumeIDs: []string{"vol-1", "vol-2-late"}}, // 3rd poll: unchanged
+		},
+	}
+	if _, err := DeleteCluster(context.Background(), f, "prod", testPollAttempts, testPollInterval); err != nil {
+		t.Fatal(err)
+	}
+	if f.associatedResourcesCalls != testPollAttempts {
+		t.Errorf("expected %d polls, got %d", testPollAttempts, f.associatedResourcesCalls)
+	}
+	want := AssociatedResources{VolumeIDs: []string{"vol-1", "vol-2-late"}}
+	if !reflect.DeepEqual(f.deletedResources, want) {
+		t.Errorf("DeleteSelective got resources %+v, want the union %+v", f.deletedResources, want)
+	}
+}
+
+// A resource must be deleted at most once even if every poll reports it --
+// appendUnseen's dedup, exercised through the public DeleteCluster path.
+func TestDeleteClusterDedupsRepeatedResourcesAcrossPolls(t *testing.T) {
+	f := &fakeClusterAPI{
+		clusters:            []Cluster{{ID: "id-9", Name: "prod"}},
+		associatedResources: AssociatedResources{VolumeIDs: []string{"vol-1"}, LoadBalancerIDs: []string{"lb-1"}},
+	}
+	if _, err := DeleteCluster(context.Background(), f, "prod", testPollAttempts, testPollInterval); err != nil {
+		t.Fatal(err)
+	}
+	want := AssociatedResources{VolumeIDs: []string{"vol-1"}, LoadBalancerIDs: []string{"lb-1"}}
+	if !reflect.DeepEqual(f.deletedResources, want) {
+		t.Errorf("expected each resource exactly once despite %d identical polls, got %+v", f.associatedResourcesCalls, f.deletedResources)
+	}
+}
+
+func TestDeleteClusterPropagatesAssociatedResourcesError(t *testing.T) {
+	sentinel := errors.New("boom")
+	f := &erroringAssociatedResourcesAPI{
+		fakeClusterAPI: fakeClusterAPI{clusters: []Cluster{{ID: "id-9", Name: "prod"}}},
+		err:            sentinel,
+	}
+	if _, err := DeleteCluster(context.Background(), f, "prod", testPollAttempts, testPollInterval); !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want %v", err, sentinel)
+	}
+	if f.deletedID != "" {
+		t.Error("DeleteSelective must not be called when the poll errors")
+	}
+}
+
+// erroringAssociatedResourcesAPI overrides AssociatedResources to always fail,
+// so DeleteCluster's error path (mid-poll) is exercised distinctly from the
+// happy path above.
+type erroringAssociatedResourcesAPI struct {
+	fakeClusterAPI
+	err error
+}
+
+func (f *erroringAssociatedResourcesAPI) AssociatedResources(context.Context, string) (AssociatedResources, error) {
+	return AssociatedResources{}, f.err
 }
 
 func TestWaitForRunning(t *testing.T) {
