@@ -18,6 +18,23 @@ const (
 	DefaultPollInterval = 10 * time.Second
 )
 
+// DefaultAssociatedResourcesPollAttempts / DefaultAssociatedResourcesPollInterval
+// govern DeleteCluster's poll of AssociatedResources: DigitalOcean's enumeration
+// of a cluster's associated resources can lag a volume's actual creation by a
+// few seconds, so a single snapshot taken right before delete can miss one
+// provisioned moments earlier in the same run. Observed in practice: a CNPG PITR
+// drill's PVC-backed Volume survived `cluster delete` as an orphan on three
+// separate CI runs, confirmed via the DO API (unattached, no live cluster)
+// before manual cleanup. Polling a few times and unioning every ID seen closes
+// that window without needing to know DO's actual indexing latency; it costs at
+// most (attempts-1)*interval added to a delete that would otherwise race it. Not
+// a caller choice -- the command layer always passes these, the same invariant
+// pattern as create's auto-upgrade/surge-upgrade.
+const (
+	DefaultAssociatedResourcesPollAttempts = 3
+	DefaultAssociatedResourcesPollInterval = 5 * time.Second
+)
+
 // Cluster is a DOKS cluster as surfaced to the user.
 type Cluster struct {
 	ID        string     `json:"id"`
@@ -239,7 +256,13 @@ func WaitForRunning(ctx context.Context, client ClusterAPI, name string, timeout
 // DigitalOcean never reaps a PVC's Volume or a Service's LoadBalancer on its
 // own. Not a caller choice: every deletion reaps them. Idempotent: a missing
 // cluster is a no-op. Returns the resolved id, or "" if none existed.
-func DeleteCluster(ctx context.Context, client ClusterAPI, name string) (string, error) {
+//
+// pollAttempts/pollInterval govern the AssociatedResources poll (see
+// DefaultAssociatedResourcesPollAttempts/Interval) -- parameterized rather than
+// hardcoded only so tests can run it fast; the command layer always passes the
+// Default* constants, the same way WaitForRunning's timeout/interval are
+// threaded through rather than baked in.
+func DeleteCluster(ctx context.Context, client ClusterAPI, name string, pollAttempts int, pollInterval time.Duration) (string, error) {
 	clusters, err := client.List(ctx)
 	if err != nil {
 		return "", err
@@ -248,7 +271,7 @@ func DeleteCluster(ctx context.Context, client ClusterAPI, name string) (string,
 	if !ok {
 		return "", nil
 	}
-	resources, err := client.AssociatedResources(ctx, existing.ID)
+	resources, err := pollAssociatedResources(ctx, client, existing.ID, pollAttempts, pollInterval)
 	if err != nil {
 		return "", err
 	}
@@ -256,4 +279,46 @@ func DeleteCluster(ctx context.Context, client ClusterAPI, name string) (string,
 		return "", err
 	}
 	return existing.ID, nil
+}
+
+// pollAssociatedResources calls AssociatedResources attempts times, spaced
+// interval apart, and unions every resource ID seen across all calls -- see
+// DeleteCluster's doc comment for why a single call is not reliable enough to
+// delete by.
+func pollAssociatedResources(ctx context.Context, client ClusterAPI, id string, attempts int, interval time.Duration) (AssociatedResources, error) {
+	var union AssociatedResources
+	seenVolumes := map[string]bool{}
+	seenSnapshots := map[string]bool{}
+	seenLBs := map[string]bool{}
+	for attempt := 1; attempt <= attempts; attempt++ {
+		resources, err := client.AssociatedResources(ctx, id)
+		if err != nil {
+			return AssociatedResources{}, err
+		}
+		union.VolumeIDs = appendUnseen(union.VolumeIDs, seenVolumes, resources.VolumeIDs)
+		union.VolumeSnapshotIDs = appendUnseen(union.VolumeSnapshotIDs, seenSnapshots, resources.VolumeSnapshotIDs)
+		union.LoadBalancerIDs = appendUnseen(union.LoadBalancerIDs, seenLBs, resources.LoadBalancerIDs)
+		if attempt == attempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return AssociatedResources{}, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+	return union, nil
+}
+
+// appendUnseen appends each id not already in seen to out, marking it seen, and
+// returns the extended slice -- an order-preserving set union across repeated
+// calls with the same seen map.
+func appendUnseen(out []string, seen map[string]bool, ids []string) []string {
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }

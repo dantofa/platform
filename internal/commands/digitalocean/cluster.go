@@ -216,7 +216,8 @@ func newClusterDeleteCmd(token *string) *cobra.Command {
 					return err // already rendered
 				}
 			}
-			if _, err := docore.DeleteCluster(ctx, client, cluster); err != nil {
+			if _, err := docore.DeleteCluster(ctx, client, cluster,
+				docore.DefaultAssociatedResourcesPollAttempts, docore.DefaultAssociatedResourcesPollInterval); err != nil {
 				return render.Fail(err)
 			}
 			return nil
