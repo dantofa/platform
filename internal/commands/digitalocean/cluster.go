@@ -216,11 +216,12 @@ func newClusterDeleteCmd(token *string) *cobra.Command {
 					return err // already rendered
 				}
 			}
-			if _, err := docore.DeleteCluster(ctx, client, cluster,
-				docore.DefaultAssociatedResourcesPollAttempts, docore.DefaultAssociatedResourcesPollInterval); err != nil {
+			result, err := docore.DeleteCluster(ctx, client, cluster,
+				docore.DefaultVolumeReapTimeout, docore.DefaultVolumeReapInterval)
+			if err != nil {
 				return render.Fail(err)
 			}
-			return nil
+			return render.JSON(map[string]any{"delete": result})
 		},
 	}
 	f := cmd.Flags()

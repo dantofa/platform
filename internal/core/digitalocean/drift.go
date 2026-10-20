@@ -9,6 +9,12 @@ type Volume struct {
 	SizeGigaBytes int64  `json:"size_gigabytes"`
 	Region        string `json:"region,omitempty"`
 	CreatedAt     string `json:"created_at,omitempty"`
+	// Tags carries the DO CSI driver's k8s:<cluster-id> tag, which is how
+	// DeleteCluster finds a cluster's Volumes after the cluster is gone.
+	Tags []string `json:"tags,omitempty"`
+	// DropletIDs is non-empty while the Volume is attached (and so cannot be
+	// deleted).
+	DropletIDs []int `json:"droplet_ids,omitempty"`
 }
 
 // VolumeSnapshot is a DigitalOcean volume snapshot as surfaced to the user.

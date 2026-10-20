@@ -3,7 +3,10 @@ package digitalocean
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
+
+	"github.com/dantofa/platform/internal/core/retry"
 )
 
 const runningState = "running"
@@ -18,21 +21,14 @@ const (
 	DefaultPollInterval = 10 * time.Second
 )
 
-// DefaultAssociatedResourcesPollAttempts / DefaultAssociatedResourcesPollInterval
-// govern DeleteCluster's poll of AssociatedResources: DigitalOcean's enumeration
-// of a cluster's associated resources can lag a volume's actual creation by a
-// few seconds, so a single snapshot taken right before delete can miss one
-// provisioned moments earlier in the same run. Observed in practice: a CNPG PITR
-// drill's PVC-backed Volume survived `cluster delete` as an orphan on three
-// separate CI runs, confirmed via the DO API (unattached, no live cluster)
-// before manual cleanup. Polling a few times and unioning every ID seen closes
-// that window without needing to know DO's actual indexing latency; it costs at
-// most (attempts-1)*interval added to a delete that would otherwise race it. Not
-// a caller choice -- the command layer always passes these, the same invariant
-// pattern as create's auto-upgrade/surge-upgrade.
+// DefaultVolumeReapTimeout / DefaultVolumeReapInterval govern DeleteCluster's
+// sweep of the cluster's tagged Volumes after the delete call (see
+// reapTaggedVolumes): long enough for DigitalOcean to destroy the node Droplets
+// and so detach every PVC's Volume, polled at a pace that matches how fast that
+// actually happens.
 const (
-	DefaultAssociatedResourcesPollAttempts = 3
-	DefaultAssociatedResourcesPollInterval = 5 * time.Second
+	DefaultVolumeReapTimeout  = 10 * time.Minute
+	DefaultVolumeReapInterval = 10 * time.Second
 )
 
 // Cluster is a DOKS cluster as surfaced to the user.
@@ -97,9 +93,9 @@ type UpdateSpec struct {
 // a cluster's PVCs and Services provisioned -- exactly what DO's plain cluster
 // delete leaves behind as orphaned, billed resources (see DeleteCluster).
 type AssociatedResources struct {
-	VolumeIDs         []string
-	VolumeSnapshotIDs []string
-	LoadBalancerIDs   []string
+	VolumeIDs         []string `json:"volume_ids"`
+	VolumeSnapshotIDs []string `json:"volume_snapshot_ids"`
+	LoadBalancerIDs   []string `json:"load_balancer_ids"`
 }
 
 // ClusterAPI is the DO cluster surface this package depends on.
@@ -250,75 +246,129 @@ func WaitForRunning(ctx context.Context, client ClusterAPI, name string, timeout
 	}
 }
 
+// ClusterDeleteAPI is the DO surface DeleteCluster depends on: the cluster
+// operations plus the account-wide Volume listing and per-Volume delete its
+// tag-based sweep needs.
+type ClusterDeleteAPI interface {
+	ClusterAPI
+	ListVolumes(ctx context.Context) ([]Volume, error)
+	// DeleteVolume deletes a Volume; an already-absent one is not an error.
+	DeleteVolume(ctx context.Context, id string) error
+}
+
+// DeleteResult reports what DeleteCluster removed. Associated is what
+// DigitalOcean listed for the selective delete; ReapedVolumeIDs are the tagged
+// Volumes still present afterwards that DeleteCluster deleted itself. Their
+// overlap tells which half failed: an ID in both was listed but not deleted by
+// DigitalOcean, an ID only in ReapedVolumeIDs was never listed at all.
+type DeleteResult struct {
+	ID              string              `json:"id"`
+	Associated      AssociatedResources `json:"associated_resources"`
+	ReapedVolumeIDs []string            `json:"reaped_volume_ids"`
+}
+
+// VolumesNotReapedError is returned when a deleted cluster's tagged Volumes are
+// still present once the sweep's timeout elapses.
+type VolumesNotReapedError struct {
+	ClusterID string
+	VolumeIDs []string
+}
+
+func (e *VolumesNotReapedError) Error() string {
+	return fmt.Sprintf("cluster %s deleted, but its volumes %v were still present after the sweep timed out", e.ClusterID, e.VolumeIDs)
+}
+
 // DeleteCluster deletes the named cluster together with its associated
 // resources (Volumes, Volume Snapshots, LoadBalancers) in the same call -- a
 // plain delete leaves those behind as orphaned, billed resources, since
 // DigitalOcean never reaps a PVC's Volume or a Service's LoadBalancer on its
 // own. Not a caller choice: every deletion reaps them. Idempotent: a missing
-// cluster is a no-op. Returns the resolved id, or "" if none existed.
+// cluster is a no-op, returning a zero result.
 //
-// pollAttempts/pollInterval govern the AssociatedResources poll (see
-// DefaultAssociatedResourcesPollAttempts/Interval) -- parameterized rather than
-// hardcoded only so tests can run it fast; the command layer always passes the
-// Default* constants, the same way WaitForRunning's timeout/interval are
-// threaded through rather than baked in.
-func DeleteCluster(ctx context.Context, client ClusterAPI, name string, pollAttempts int, pollInterval time.Duration) (string, error) {
+// The selective delete alone is not enough: CI runs leaked every PVC Volume
+// that lived as long as the cluster (Prometheus/Loki/Tempo), each still carrying
+// the cluster's k8s:<id> tag and detached, so DeleteCluster then sweeps that tag
+// until no Volume carries it (see reapTaggedVolumes). The tag is what the DO CSI
+// driver stamps on every Volume it creates, so the sweep holds regardless of
+// whether DigitalOcean failed to list a Volume or listed it and failed to delete
+// it.
+func DeleteCluster(ctx context.Context, client ClusterDeleteAPI, name string, reapTimeout, reapInterval time.Duration) (DeleteResult, error) {
 	clusters, err := client.List(ctx)
 	if err != nil {
-		return "", err
+		return DeleteResult{}, err
 	}
 	existing, ok := resolve(clusters, name)
 	if !ok {
-		return "", nil
+		return DeleteResult{}, nil
 	}
-	resources, err := pollAssociatedResources(ctx, client, existing.ID, pollAttempts, pollInterval)
+	resources, err := client.AssociatedResources(ctx, existing.ID)
 	if err != nil {
-		return "", err
+		return DeleteResult{}, err
 	}
 	if err := client.DeleteSelective(ctx, existing.ID, resources); err != nil {
-		return "", err
+		return DeleteResult{}, err
 	}
-	return existing.ID, nil
+	result := DeleteResult{ID: existing.ID, Associated: resources}
+	result.ReapedVolumeIDs, err = reapTaggedVolumes(ctx, client, existing.ID, reapTimeout, reapInterval)
+	return result, err
 }
 
-// pollAssociatedResources calls AssociatedResources attempts times, spaced
-// interval apart, and unions every resource ID seen across all calls -- see
-// DeleteCluster's doc comment for why a single call is not reliable enough to
-// delete by.
-func pollAssociatedResources(ctx context.Context, client ClusterAPI, id string, attempts int, interval time.Duration) (AssociatedResources, error) {
-	var union AssociatedResources
-	seenVolumes := map[string]bool{}
-	seenSnapshots := map[string]bool{}
-	seenLBs := map[string]bool{}
-	for attempt := 1; attempt <= attempts; attempt++ {
-		resources, err := client.AssociatedResources(ctx, id)
-		if err != nil {
-			return AssociatedResources{}, err
-		}
-		union.VolumeIDs = appendUnseen(union.VolumeIDs, seenVolumes, resources.VolumeIDs)
-		union.VolumeSnapshotIDs = appendUnseen(union.VolumeSnapshotIDs, seenSnapshots, resources.VolumeSnapshotIDs)
-		union.LoadBalancerIDs = appendUnseen(union.LoadBalancerIDs, seenLBs, resources.LoadBalancerIDs)
-		if attempt == attempts {
-			break
+// reapTaggedVolumes deletes every Volume tagged k8s:<clusterID> once it has
+// detached (a Volume cannot be deleted while still attached to a node Droplet
+// the cluster delete is tearing down), polling until none carry the tag or
+// timeout elapses. A transient failure is retried on the next poll -- a dropped
+// connection here must not leave the Volumes behind -- while any other error
+// fails fast. Returns the IDs it deleted itself.
+func reapTaggedVolumes(ctx context.Context, client ClusterDeleteAPI, clusterID string, timeout, interval time.Duration) ([]string, error) {
+	tag := "k8s:" + clusterID
+	reaped := []string{}
+	deleted := map[string]bool{}
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining, err := sweepTaggedVolumes(ctx, client, tag, deleted, &reaped)
+		switch {
+		case err != nil && !retry.Transient(err):
+			return reaped, err
+		case err == nil && len(remaining) == 0:
+			return reaped, nil
+		case time.Now().After(deadline):
+			if err != nil {
+				return reaped, err
+			}
+			return reaped, &VolumesNotReapedError{ClusterID: clusterID, VolumeIDs: remaining}
 		}
 		select {
 		case <-ctx.Done():
-			return AssociatedResources{}, ctx.Err()
+			return reaped, ctx.Err()
 		case <-time.After(interval):
 		}
 	}
-	return union, nil
 }
 
-// appendUnseen appends each id not already in seen to out, marking it seen, and
-// returns the extended slice -- an order-preserving set union across repeated
-// calls with the same seen map.
-func appendUnseen(out []string, seen map[string]bool, ids []string) []string {
-	for _, id := range ids {
-		if !seen[id] {
-			seen[id] = true
-			out = append(out, id)
+// sweepTaggedVolumes makes one pass of reapTaggedVolumes: it deletes each
+// detached Volume carrying tag (recording it in reaped, once), and returns the
+// IDs of those still attached.
+func sweepTaggedVolumes(ctx context.Context, client ClusterDeleteAPI, tag string, deleted map[string]bool, reaped *[]string) ([]string, error) {
+	volumes, err := client.ListVolumes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var remaining []string
+	for _, v := range volumes {
+		if !slices.Contains(v.Tags, tag) {
+			continue
+		}
+		if len(v.DropletIDs) > 0 {
+			remaining = append(remaining, v.ID)
+			continue
+		}
+		if err := client.DeleteVolume(ctx, v.ID); err != nil {
+			return nil, err
+		}
+		if !deleted[v.ID] {
+			deleted[v.ID] = true
+			*reaped = append(*reaped, v.ID)
 		}
 	}
-	return out
+	return remaining, nil
 }

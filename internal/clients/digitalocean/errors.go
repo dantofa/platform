@@ -30,6 +30,7 @@ func MissingCredentials(hint string) error {
 // reworded summary.
 type APIError struct {
 	payload any
+	cause   error
 }
 
 // NewAPIError wraps a provider error payload.
@@ -39,6 +40,10 @@ func NewAPIError(payload any) *APIError { return &APIError{payload: payload} }
 func (e *APIError) Payload() any { return e.payload }
 
 func (e *APIError) Error() string { return fmt.Sprintf("%v", e.payload) }
+
+// Unwrap exposes a transport-level cause (nil for an answer from the API), so
+// retry.Transient can still tell a dropped connection from a real API error.
+func (e *APIError) Unwrap() error { return e.cause }
 
 // apiError translates a provider SDK error (godo REST or smithy/S3) into an
 // APIError carrying the provider's raw error body, preserving it for the CLI to
@@ -59,5 +64,5 @@ func apiError(err error) error {
 			"message": api.ErrorMessage(),
 		})
 	}
-	return NewAPIError(err.Error())
+	return &APIError{payload: err.Error(), cause: err}
 }
