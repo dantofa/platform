@@ -219,9 +219,13 @@ only tracks its own app-image CVEs.
   Go module/build cache (`actions/cache`) sits alongside the nix-store cache
   because `GOMODCACHE`/`GOCACHE` live in `$HOME`. CLI-invoking workflows
   (`local`, `preview`, `teardown`) run the shipped artifact via
-  `nix run .#default`; `preview`/`teardown` also use `nix develop --command bws …`
-  for secret injection. `nix.yml` builds the packaged artifact and asserts the
-  version is stamped.
+  `nix run .#default`, injecting secrets with `bws`. API-only jobs (`drift`,
+  `spaces`, `teardown`) use the minimal **`api` dev shell** (`nix develop .#api
+  --command bws …`, just `bws`) and cache it under their own `nix-api-` key:
+  `bws` is unfree, so it is never prebuilt on cache.nixos.org, and the first job
+  to save a cache key wins, so a key shared by jobs with different closures can
+  lock in a store without it. `nix.yml` builds the packaged artifact and asserts
+  the version is stamped.
 - **CI forces plain (uncolored) output** via `env: { FORCE_COLOR: "", NO_COLOR:
 "1" }` — `FORCE_COLOR` must be **empty** (any non-empty value, even `"0"`,
   forces color and overrides `NO_COLOR`).

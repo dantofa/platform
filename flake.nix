@@ -187,6 +187,15 @@
           # `runtimeTools` — so a `go run ./cmd/dctl` / `just run` shells out to
           # the same kind/flux/docker/git the packaged dctl bundles. Enter with
           # `nix develop` (or `direnv`).
+          # The minimal shell for API-only CI jobs (drift, spaces, teardown): they
+          # only inject secrets with bws and run the packaged dctl via `nix run
+          # .#default`, so they skip the Go toolchain, linters, and browser tooling.
+          # bws is unfree, so cache.nixos.org never has it prebuilt and it compiles
+          # from source on a cold store; those jobs cache this shell under their own
+          # `nix-api-` key so the cache always holds it.
+          api = pkgs.mkShell {
+            packages = [ pkgs.bws ];
+          };
           default = pkgs.mkShell {
             packages = (runtimeTools pkgs) ++ (browserTools pkgs) ++ [
               # Go toolchain + analyzers.
