@@ -211,6 +211,8 @@
               # only; dctl never shells out to it, so it is not a runtimeTool).
               pkgs.velero
             ];
+            # Claude configuration
+            CLAUDE_CONFIG_DIR = ".claude";
             # Local kubeconfig target.
             KUBECONFIG = ".kubeconfig";
             # In-repo dev runs dctl from source: cluster.just defaults $DCTL to

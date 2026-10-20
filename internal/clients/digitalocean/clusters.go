@@ -3,6 +3,7 @@ package digitalocean
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/digitalocean/godo"
@@ -159,6 +160,20 @@ func resourceIDs(resources []*godo.AssociatedResource) []string {
 	return ids
 }
 
+// DeleteVolume deletes a block-storage Volume. Idempotent: an already-absent
+// Volume (404) is not an error, since DigitalOcean may still be finishing its
+// own delete of it from a selective cluster delete.
+func (c *ClusterClient) DeleteVolume(ctx context.Context, id string) error {
+	resp, err := c.godo.Storage.DeleteVolume(ctx, id)
+	if err != nil {
+		if resp != nil && resp.Response != nil && resp.StatusCode == http.StatusNotFound {
+			return nil
+		}
+		return apiError(err)
+	}
+	return nil
+}
+
 // ListVolumes returns every block-storage Volume in the account -- not just
 // those attached to a cluster. It backs the drift audit's account-wide side.
 func (c *ClusterClient) ListVolumes(ctx context.Context) ([]core.Volume, error) {
@@ -233,7 +248,10 @@ func (c *ClusterClient) ListLoadBalancers(ctx context.Context) ([]core.LoadBalan
 }
 
 func toCoreVolume(v godo.Volume) core.Volume {
-	out := core.Volume{ID: v.ID, Name: v.Name, SizeGigaBytes: v.SizeGigaBytes}
+	out := core.Volume{
+		ID: v.ID, Name: v.Name, SizeGigaBytes: v.SizeGigaBytes,
+		Tags: v.Tags, DropletIDs: v.DropletIDs,
+	}
 	if v.Region != nil {
 		out.Region = v.Region.Slug
 	}
