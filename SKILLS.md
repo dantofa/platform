@@ -172,7 +172,10 @@ into your recipes):
 
 - **Local (kind)** — `just cluster local create` (create + bootstrap) / `verify` /
   `delete` / `test`. Ingress is a local Traefik NodePort published on the host's real
-  `:80`/`:443`; no Cloudflare, no tunnel.
+  `:80`/`:443`; no Cloudflare, no tunnel. Bootstrap publishes the platform's `flux/`
+  tree **embedded in `dctl`** (the rev your flake pins), so it runs from your repo with
+  no platform checkout; your own `flux/` is published separately
+  (`dctl local cluster push --name <yours>`).
 - **Preview (DOKS, ephemeral)** —
   `dctl … cluster bootstrap --base-domain preview.dantofa.dev [--grafana-cloud]`.
   Ingress is the Cloudflare Tunnel, which terminates TLS at the edge, so **no

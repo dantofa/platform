@@ -3,7 +3,10 @@ package local
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+	"testing/fstest"
 )
 
 type fakeLocalAPI struct {
@@ -12,6 +15,10 @@ type fakeLocalAPI struct {
 	deleted    string
 	pushedURL  string
 	reconciled string
+	pushedPath string
+	pushedFile string // content of flux/cluster/a.yaml at push time
+	pushedSrc  string
+	pushedRev  string
 }
 
 func (f *fakeLocalAPI) List(context.Context) ([]string, error) { return f.clusters, nil }
@@ -32,7 +39,11 @@ func (f *fakeLocalAPI) GitProvenance(context.Context) (string, string, error) {
 	return "file:///repo", "main@sha1:abc", nil
 }
 
-func (f *fakeLocalAPI) PushArtifact(_ context.Context, url, _, _, _ string) error {
+func (f *fakeLocalAPI) PushArtifact(_ context.Context, url, path, source, revision string) error {
+	f.pushedPath, f.pushedSrc, f.pushedRev = path, source, revision
+	if b, err := os.ReadFile(filepath.Join(path, "flux/cluster/a.yaml")); err == nil {
+		f.pushedFile = string(b)
+	}
 	f.pushedURL = url
 	return nil
 }
@@ -109,5 +120,26 @@ func TestGetKubeconfigNotFound(t *testing.T) {
 	var nf *LocalClusterNotFoundError
 	if !errors.As(err, &nf) {
 		t.Fatalf("expected LocalClusterNotFoundError, got %v", err)
+	}
+}
+
+func TestPushPlatformArtifactPublishesEmbeddedTree(t *testing.T) {
+	f := &fakeLocalAPI{}
+	tree := fstest.MapFS{"flux/cluster/a.yaml": {Data: []byte("kind: X\n")}}
+	res, err := PushPlatformArtifact(context.Background(), f, tree, "2026.11.01+gabc", "local", "latest", 5001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.pushedURL != "oci://localhost:5001/local:latest" {
+		t.Errorf("wrong push url: %q", f.pushedURL)
+	}
+	if f.pushedFile != "kind: X\n" {
+		t.Errorf("tree not materialized with flux/ prefix, got %q", f.pushedFile)
+	}
+	if f.pushedSrc != PlatformSource || f.pushedRev != "2026.11.01+gabc" || res.Revision != f.pushedRev {
+		t.Errorf("wrong provenance: %q %q", f.pushedSrc, f.pushedRev)
+	}
+	if _, err := os.Stat(f.pushedPath); !os.IsNotExist(err) {
+		t.Errorf("temp tree not cleaned up: %v", err)
 	}
 }

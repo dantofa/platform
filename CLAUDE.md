@@ -74,6 +74,13 @@ kustomization verify` gate rely on).
   in-cluster SeaweedFS S3 store standing in for a cloud bucket. OCI-only; the
   `cluster` root `dependsOn` it so the backup target exists before Velero.
 
+**The kind source is embedded.** `platform.go` (repo root) `go:embed`s `flux/`, so
+`dctl local cluster bootstrap` / `push --name local` publish the tree of the rev the
+binary was built from — from any directory, a downstream repo included (never the
+cwd's `flux/`). `--platform-path` (bootstrap) / `--path` (push) override it with a
+checkout for uncommitted edits; `push --name <other>` still packages `.` (a
+downstream's own tree). Under `go run` the embed is recompiled, i.e. the working tree.
+
 Add a shared stack by dropping `<stack>.yaml` + a `<stack>/` directory into
 `flux/cluster/` and listing it in `flux/cluster/kustomization.yaml` (one line) —
 **and add the deployed tool to the toolset list in `README.md`** (that list is the

@@ -71,8 +71,8 @@ jobs:
           persist-credentials: false
           # Full history (not the default shallow clone): phase 1 below needs
           # origin/master's flux/ tree available locally, since `local cluster
-          # bootstrap`/`push` package whatever's currently on disk rather than
-          # pulling a git ref the way the DOKS git-source flow did.
+          # bootstrap`/`push` are pointed at a directory (--platform-path/--path)
+          # rather than pulling a git ref the way the DOKS git-source flow did.
           fetch-depth: 0
 
       - name: Install Nix
@@ -99,7 +99,8 @@ jobs:
       # Phase 1: bootstrap on master's flux/ tree -- the state a running cluster
       # is already in. `git checkout -- flux/` overlays those files onto the
       # working tree without touching HEAD, so dctl itself still builds from the
-      # PR's Go code; only the packaged manifests are master's.
+      # PR's Go code; `--platform-path .` publishes that on-disk tree (master's
+      # manifests) instead of the flux/ embedded in the PR-built dctl.
       - name: Bootstrap on master
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
@@ -108,6 +109,7 @@ jobs:
         run: |
           git checkout origin/master -- flux/
           nix run .#default -- local cluster bootstrap --base-domain "$BASE_DOMAIN" \
+            --platform-path . \
             --bitwarden-token "$BWS_ACCESS_TOKEN" \
             --bitwarden-project-id "$BWS_PROJECT_ID" --bitwarden-org-id "$BWS_ORGANIZATION_ID"
 
@@ -136,7 +138,7 @@ jobs:
       - name: Upgrade to the PR revision
         run: |
           git checkout HEAD -- flux/
-          nix run .#default -- local cluster push
+          nix run .#default -- local cluster push --path .
 
       # The gate: the PR's manifests must reconcile as an upgrade over master.
       # A failure here is an immutable-field/prune/CRD-upgrade break that a
