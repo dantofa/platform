@@ -50,6 +50,28 @@ test "$(grep -cF ".just/cluster.just" "$probe/justfile")" -eq 1 \
 rm -rf "$probe"
 echo "  ok created once, idempotent"
 
+echo "--- consumer gained a Renovate config extending the platform preset (init_hook) ---"
+test -f renovate.json5 || { echo "renovate.json5 not scaffolded"; exit 1; }
+grep -qF "dantofa/platform//.github/renovate/preset" renovate.json5 \
+  || { echo "scaffolded renovate.json5 lacks the preset"; exit 1; }
+echo "  ok scaffolded"
+
+echo "--- ensure-renovate creates once, never edits an existing config ---"
+probe="$(mktemp -d)"
+( cd "$probe" && bash "$DEVBOX_PACKAGES_DIR/ensure-renovate.sh" >/dev/null )
+test -f "$probe/renovate.json5" || { echo "no renovate.json5 created"; exit 1; }
+rm -rf "$probe"
+probe="$(mktemp -d)"
+mkdir -p "$probe/.github"
+printf '{ "extends": ["config:recommended"] }\n' > "$probe/.github/renovate.json"
+before="$(cat "$probe/.github/renovate.json")"
+( cd "$probe" && bash "$DEVBOX_PACKAGES_DIR/ensure-renovate.sh" | grep -q 'does not extend' ) \
+  || { echo "no hint for an existing config lacking the preset"; exit 1; }
+test ! -e "$probe/renovate.json5" || { echo "created a second config next to an existing one"; exit 1; }
+test "$(cat "$probe/.github/renovate.json")" = "$before" || { echo "existing config was modified"; exit 1; }
+rm -rf "$probe"
+echo "  ok created once, existing config untouched"
+
 echo "--- just cluster … dispatch routes to the flat recipes ---"
 just --dry-run cluster verify backup 2>&1 | grep -q 'cluster-verify'
 just --dry-run cluster verify image-scan 2>&1 | grep -q 'cluster-verify'

@@ -148,6 +148,15 @@
           text = builtins.readFile ./devbox/ensure-justfile.sh;
           executable = true;
         };
+        # The init_hook helper that scaffolds a Renovate config extending the platform
+        # preset (create-if-absent; never edits an existing config). Same shape and
+        # reasons as ensure-justfile above.
+        ensure-renovate = (pkgsFor system).writeTextFile {
+          name = "ensure-renovate";
+          destination = "/ensure-renovate.sh";
+          text = builtins.readFile ./devbox/ensure-renovate.sh;
+          executable = true;
+        };
         # The CLIs the cluster.just recipes shell out to (dctl comes from
         # `default`), pinned to the same nixpkgs as everything else — bundled for
         # downstream consumers via the devbox plugin so `just cluster …` runs
