@@ -35,3 +35,27 @@ CVE-2025-62878
 # a subnet list. Disposable CI test backend regardless, never user-facing.
 # Tracked in ROADMAP.md.
 CVE-2026-90711
+
+# brotli-libs (out-of-bounds write in the Brotli decoder, fixed in Alpine
+# brotli 1.2.1-r0) -- fluxcd/kustomize-controller v1.9.x, whose Alpine base
+# predates the fix. Scanned empirically: even the newest 1.9 patch (v1.9.6) is
+# still affected, and only the Flux 2.10 line (v1.10.x) is clean. The controller
+# images come from the pinned `flux` CLI (nixpkgs ships 2.9.x), so the fix arrives
+# with a nixpkgs bump (`just update`) to a 2.10 CLI. The same CVE in
+# chrislusf/seaweedfs is fixed (bumped to 4.51), so only this one remains.
+# Tracked in ROADMAP.md.
+CVE-2026-111497
+
+# ca-certificates (RHEL 9 bundle, fixed in 2026.2.92_v9.0.319-90.3.el9_8) --
+# grafana/alloy-operator, deployed by the k8s-monitoring chart. Scanned
+# empirically: 1.14.4, the newest tag, is still affected, so no chart bump can
+# clear it yet. Renovate bumps the chart when a rebuilt operator image ships.
+# Tracked in ROADMAP.md.
+CVE-2026-114406
+
+# certifi < 2026.10.18 (bundled emSign root CAs with compromised intermediate CA
+# keys) -- kiwigrid/k8s-sidecar in the monitoring namespace. Scanned
+# empirically: 2.14.1, the newest tag, still bundles the vulnerable certifi.
+# Renovate bumps the owning chart when the sidecar image ships a fixed certifi.
+# Tracked in ROADMAP.md.
+GHSA-6q48-6c7w-9gw2
