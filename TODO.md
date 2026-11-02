@@ -34,6 +34,7 @@
 - [DONE] Give the local (kind) cluster a TLS cert whose SANs actually match `${base_domain}`, so `https://` can be verified rather than only ignored
 - [DEFERRED] Make the local cert publicly trusted, so tools work with TLS encryption out of the box. Only a real ACME cert stored in BWS achieves this
 - Add a tenant/app-namespace onboarding template (namespace + quota + limits + isolation NetworkPolicy) — deferred until a downstream app informs its shape
+- Automate `devbox update` for downstream projects (e.g. a scheduled workflow that runs it and opens a PR) — Renovate's `nix` manager only covers `flake.lock` (`.github/renovate/preset.json`), not the `devbox.lock` the devbox plugin pins
 
 ## Monitoring
 
