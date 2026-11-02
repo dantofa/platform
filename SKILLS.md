@@ -180,7 +180,11 @@ into your recipes):
   `dctl … cluster bootstrap --base-domain preview.dantofa.dev [--grafana-cloud]`.
   Ingress is the Cloudflare Tunnel, which terminates TLS at the edge, so **no
   `--tls-issuer` is needed** (passing one without `--dolb` is inert and warns). Treat
-  as disposable.
+  as disposable. **`cluster_name` must be unique per Cloudflare account**: the tunnel
+  is named after it (`flux/ingress/tunnel`: `tunnel_name: "${cluster_name}"`), so two
+  clusters sharing a name share or fight over one tunnel and its DNS records. For
+  per-PR previews use `<project>-pr<N>` (e.g. `auth-pr42`) as `DOKS_CLUSTER` — never a
+  fixed name — and the same name in `connect`/`bootstrap`/`delete`.
 - **Production (DOKS)** — create with `--ha` and a node size, then
   `dctl … cluster bootstrap --base-domain <domain> --dolb --tls-issuer letsencrypt --env prod [--grafana-cloud]`.
   Traefik + external-dns behind a DO LoadBalancer, a real Let's Encrypt cert.
@@ -364,9 +368,25 @@ Every app **must** emit **OpenTelemetry traces**. Send **OTLP** to the in-cluste
 receiver (the `applicationObservability` collector); it forwards traces → local Tempo
 (and Grafana Cloud), while app OTLP metrics/logs fan out to Prometheus/Loki.
 
-- Point your SDK at the alloy-receiver Service in the `monitoring` namespace — OTLP
-  gRPC `:4317` or HTTP `:4318` (confirm the Service name with
-  `kubectl -n monitoring get svc`; set `OTEL_EXPORTER_OTLP_ENDPOINT`).
+- Point your SDK at the alloy-receiver Service. Its name is
+  `<HelmRelease name>-<collector name>` = `k8s-monitoring-alloy-receiver`, in the
+  `monitoring` namespace, so you can write manifests without a cluster to query.
+  Paste one of:
+
+  ```
+  # gRPC
+  OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+  OTEL_EXPORTER_OTLP_ENDPOINT=http://k8s-monitoring-alloy-receiver.monitoring.svc.cluster.local:4317
+  # HTTP/protobuf
+  OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+  OTEL_EXPORTER_OTLP_ENDPOINT=http://k8s-monitoring-alloy-receiver.monitoring.svc.cluster.local:4318
+  ```
+
+  Both are plaintext inside the cluster. The name comes from the `k8s-monitoring`
+  HelmRelease and its `alloy-receiver` collector in
+  `flux/cluster/k8s-monitoring/release.yaml`, so it only changes if one of those is
+  renamed in the platform. (`kubectl -n monitoring get svc` confirms it on a live
+  cluster.)
 - For LLM/RAG/agent apps, follow the **OpenTelemetry GenAI semantic conventions** (model,
   provider, input/output tokens, etc.) — the platform's per-query cost/latency/accuracy
   analytics are built on those span attributes, so they are not optional.

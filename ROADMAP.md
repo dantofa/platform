@@ -8,50 +8,22 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
   - Attach a primary domain (dantofa.dev, dantofa.com, or dantofa.io) in M365 admin portal
   - Verify domain ownership and configure MX/SPF/DKIM/DMARC records
   - Create accounts for all team members and enforce MFA via Conditional Access baseline policy
-- Configure Entra ID as an external Identity Provider in Zitadel
-  - Prerequisite: M365 Business Premium tenant active with Entra ID P1
-  - Register Zitadel as an Enterprise Application in Entra (OIDC preferred; SAML as fallback)
-  - Map Entra group claims to Zitadel roles for tenant access control
-  - Validate end-to-end flow: Entra SSO login → Zitadel → tenant application
-  - Document the setup as a reference implementation — this is the integration path B2B enterprise tenants will follow
-
----
-
-## Infrastructure: Cluster and GitOps
-
-- Add Zitadel admin OIDC support for authentication using Gitlab
-- Add testing for tenant Zitadel organizations
 
 ---
 
 ## Infrastructure: Security
 
-- Implement automated rotation for Zitadel machine user PATs
-  - Current: PAT is created once and stored in the `auth-credentials` Secret; never rotated
-  - Target: automated rotation on a configurable schedule or on PAT expiry detection via the drift timer
 - Update grpc dependency across Flux, cloudflare-tunnel-ingress-controller, and trivy-operator charts once CVE-2026-33186 patches are released; remove entry from `.trivyignore-cluster`
-- Update Alpine OpenSSL base image in trivy-operator and Zitadel charts once CVE-2026-31789 patches are released; remove entry from `.trivyignore-cluster`
-- Update Zitadel chart once CVE-2026-41242 (protobufjs) is patched upstream; remove entry from `.trivyignore-cluster`
+- Update Alpine OpenSSL base image in the trivy-operator chart once CVE-2026-31789 patches are released; remove entry from `.trivyignore-cluster`
 - Update the external-secrets bitwarden-sdk-server image once CVE-2025-68121 (Go stdlib) is patched upstream; remove entry from `.trivyignore-cluster`
 - Pick up a `kind` release bundling `rancher/local-path-provisioner` >= v0.0.34 (CVE-2025-62878, path traversal via StorageClass `parameters.pathPattern`) via `just update`'s nixpkgs bump; remove entry from `.trivyignore-cluster`
 - Bump `mendhak/http-https-echo` past tag 42 once it ships a build whose Express pulls in proxy-addr >= 2.0.8 (CVE-2026-90711, IP spoofing via IPv4-mapped IPv6 trust subnets); remove entry from `.trivyignore-cluster` (the three CRITICALs currently suppressed by `local.yml`'s image-security gate)
 - Pick up a `flux` CLI in the 2.10 line (kustomize-controller v1.10.x) via `just update`'s nixpkgs bump once it lands; the 2.9.x controllers' Alpine base carries CVE-2026-111497 (brotli-libs out-of-bounds write). Remove the entry from `.trivyignore-cluster`
 - Bump the `grafana/alloy-operator` image (via the k8s-monitoring chart) once a build ships an `el9_8` ca-certificates fixing CVE-2026-114406; 1.14.4 is still affected. Remove the entry from `.trivyignore-cluster`
 - Bump the `kiwigrid/k8s-sidecar` image (via its owning chart) once a build ships certifi >= 2026.10.18 (GHSA-6q48-6c7w-9gw2, compromised emSign roots); 2.14.1 is still affected. Remove the entry from `.trivyignore-cluster`
-- Broaden automated secret rotation beyond Zitadel to the platform's own credentials: the Bitwarden machine-account token (ESO secret-zero), the DigitalOcean API token, and the Cloudflare API token
+- Add automated secret rotation for the platform's own credentials: the Bitwarden machine-account token (ESO secret-zero), the DigitalOcean API token, and the Cloudflare API token
 - Configure Cloudflare edge security to complement the origin IP allowlist: WAF managed rules, rate limiting, and bot management
 - Establish the platform's own compliance/audit posture (we sell ISO compliance): periodic access reviews, immutable audit logging for admin/operator actions, and a documented data-handling and retention policy
-
----
-
-## Infrastructure: Automation and Secrets
-
-- Migrate Zitadel masterkey to HashiCorp Vault via ESO push mode
-  - Currently the one approved manual exception to the "automate everything" rule
-  - Tracked in `flux/management/infrastructure/services/zitadel/masterkey.yaml`
-  - Requires: Vault deployment in-cluster integrated with ESO
-  - Until complete: masterkey must not have a non-zero `refreshInterval` — changing it requires a full database re-encryption
-- Add Zitadel masterkey rotation action to dantofa-ctl tool
 
 ---
 
@@ -65,7 +37,7 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
   - Must be listed in `flux/management/tenants/` and excluded from any public discovery
 - Implement B2B private tenant invitation flow
   - Admin-only action — no self-serve path
-  - Flow: admin creates Tenant CR → operator provisions namespace + Zitadel org → invitation email sent via Zitadel
+  - Flow: admin creates Tenant CR → operator provisions the tenant namespace and its identity (per the auth/OIDC contract published by dantofa/auth) → invitation email sent
   - Define invitation acceptance UX (landing page in tenant frontend)
 - Implement feature gating on the Tenant CRD
   - Add `spec.features` field: list of enabled feature identifiers (e.g. `iso-compliance-rag`, `multi-user-chat`)
@@ -73,7 +45,7 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
   - Operator must not deploy feature workloads to tenants that do not have the feature enabled
 - Create tenant management application on inception tenant
   - Supports root (B2C), B2B private, and inception tenants
-  - Integrates with Zitadel OIDC using per-tenant `auth-credentials` Secret
+  - Integrates with the auth/OIDC contract published by dantofa/auth, using per-tenant credentials
   - Tech stack TBD — evaluate Next.js vs. SvelteKit; document selection rationale
 - Create free and paid tenant plans with different resource allocations and features
   - Define plan tiers and feature matrix (links to `spec.features` gating)
@@ -84,7 +56,7 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
   - Evaluate: billing microservice vs. managed Stripe webhook handler; document selection
 - [DEFERRED: No need to implement policies with no tenant traffic] Implement network policies for tenant namespace isolation
   - Default-deny all cross-namespace pod-to-pod traffic
-  - Allow: tenant workloads → `zitadel-system` (auth), tenant workloads → shared agent infrastructure (if any)
+  - Allow: tenant workloads → the auth service (per the dantofa/auth contract), tenant workloads → shared agent infrastructure (if any)
   - Deny: tenant → tenant (unconditionally)
   - Must complement existing Kyverno policies — not replace them
 
@@ -171,11 +143,11 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
 
 - Set up monitoring and logging for the Kubernetes cluster (infrastructure-level)
   - Metrics: node CPU/memory/disk, pod restarts, Flux reconciliation lag, ESO sync failures
-  - Logs: centralized log aggregation for operator, Zitadel, and all agent workloads
+  - Logs: centralized log aggregation for the operator and all agent workloads
   - Alerting: production incident notifications (evaluate PagerDuty, Opsgenie, or equivalent)
 - Implement operator health metrics
-  - Track: tenant provisioning duration, Zitadel API error rate, drift correction frequency per tenant
-  - Alert on: repeated provisioning failures, Zitadel API degradation
+  - Track: tenant provisioning duration, identity-provisioning API error rate, drift correction frequency per tenant
+  - Alert on: repeated provisioning failures, identity-provisioning API degradation
   - [DEFERRED: operator evaluation loop] Formal measurement of operator reconciliation accuracy is deferred. The 5-minute drift timer corrects divergence but does not emit a structured success/failure metric. Add reconciliation outcome metrics and a dashboard when the observability backend is deployed.
 - Implement Flux reconciliation alerting
   - Alert when any Kustomization fails to reconcile for more than N minutes (define threshold)
@@ -183,7 +155,7 @@ Items marked `[DONE]` are complete. Items marked `[DEFERRED]` are intentionally 
 - Define and track SLOs
   - Tenant provisioning time: target < 2 minutes from CR creation to `phase=Ready`
   - Agent query latency: target p95 < TBD ms per query type (set after baseline measurement)
-  - Authentication availability: Zitadel uptime target (define based on SLA requirements)
+  - Authentication availability: uptime target for the auth service (owned by dantofa/auth; define based on SLA requirements)
 
 ---
 
