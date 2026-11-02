@@ -16,6 +16,16 @@
   // (nixos-unstable), which has no versions to bump, so it stays on the manual
   // `just update` path and the nix manager is intentionally left out.
   enabledManagers: ["github-actions", "gomod", "flux", "custom.regex"],
+  // Platform images are scanned by the image-security gate, so a fixed chart or
+  // image should reach a PR within a day, not wait for the weekly window. Only the
+  // managers that own flux/ images and chart pins run daily; everything else
+  // (Go modules, Actions) stays weekly.
+  packageRules: [
+    {
+      matchManagers: ["flux", "custom.regex"],
+      schedule: ["before 6am every day"],
+    },
+  ],
   // Flux GitOps manifests: HelmRelease chart versions (resolved via the linked
   // HelmRepository) and container images inside HelmRelease values (the Velero
   // AWS plugin).

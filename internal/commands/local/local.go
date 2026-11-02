@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dantofa/platform"
 	cfclient "github.com/dantofa/platform/internal/clients/cloudflare"
 	fluxclient "github.com/dantofa/platform/internal/clients/flux"
 	"github.com/dantofa/platform/internal/clients/kube"
@@ -20,6 +21,7 @@ import (
 	localcore "github.com/dantofa/platform/internal/core/local"
 	teardowncore "github.com/dantofa/platform/internal/core/teardown"
 	"github.com/dantofa/platform/internal/render"
+	"github.com/dantofa/platform/internal/version"
 )
 
 // Teardown drain bounds (see the DOKS delete command): wait for the tunnel
@@ -100,12 +102,12 @@ const dbBackupNamespace = "cnpg-system"
 
 func newLocalBootstrapCmd() *cobra.Command {
 	var (
-		fluxVersion, registryName, artifactName, tag string
-		sourceName, baseDomain                       string
-		bwToken, bwProjectID, bwOrgID                string
-		metricsRemote                                bool
-		grafanaCloud                                 bool
-		env                                          string
+		fluxVersion, registryName, artifactName, tag, platformPath string
+		sourceName, baseDomain                                     string
+		bwToken, bwProjectID, bwOrgID                              string
+		metricsRemote                                              bool
+		grafanaCloud                                               bool
+		env                                                        string
 	)
 	cmd := &cobra.Command{
 		Use:   "bootstrap [name]",
@@ -123,10 +125,13 @@ func newLocalBootstrapCmd() *cobra.Command {
 			name := nameArg(args)
 			kindClient := localclient.NewKindClient()
 
-			// Publish the working-tree flux/ tree first, so the OCIRepository the
+			// Publish the platform's flux/ tree first, so the OCIRepository the
 			// bootstrap registers can pull it immediately (no separate `push`).
-			pushed, err := localcore.PushArtifact(ctx, kindClient, artifactName, tag,
-				localcore.DefaultArtifactPath, localcore.DefaultRegistryPort)
+			// By default that is the tree embedded in this binary (its own rev),
+			// so it works from any directory; --platform-path overrides it with
+			// a checkout (e.g. uncommitted edits).
+			pushed, err := pushPlatform(ctx, kindClient, platformPath, artifactName, tag,
+				localcore.DefaultRegistryPort)
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -273,6 +278,8 @@ func newLocalBootstrapCmd() *cobra.Command {
 	f.StringVar(&fluxVersion, "flux-version", "", "Flux version to install (default: the bundled flux CLI's version).")
 	f.StringVar(&registryName, "registry-name", localcore.DefaultRegistryName, "In-cluster OCI registry name the OCIRepository pulls from.")
 	f.StringVar(&artifactName, "artifact-name", localcore.DefaultArtifactName, "OCI artifact name (matches `push`).")
+	f.StringVar(&platformPath, "platform-path", "",
+		"Publish this platform checkout instead of the flux/ tree embedded in dctl.")
 	f.StringVarP(&tag, "tag", "t", localcore.DefaultArtifactTag, "OCI tag to track.")
 	f.StringVar(&sourceName, "source-name", fluxcore.DefaultSourceName, "Name of the Flux OCIRepository the roots pull from.")
 	f.StringVar(&baseDomain, "base-domain", "", "Cluster ingress FQDN (${base_domain} in cluster-vars). Required; for local, a wildcard-DNS value like 127.0.0.1.nip.io resolves to localhost.")
@@ -339,6 +346,15 @@ func newLocalCreateCmd() *cobra.Command {
 	return cmd
 }
 
+// pushPlatform publishes the platform artifact: the checkout at platformPath when
+// given, else the flux/ tree embedded in this binary.
+func pushPlatform(ctx context.Context, client *localclient.KindClient, platformPath, name, tag string, registryPort int) (localcore.PushResult, error) {
+	if platformPath != "" {
+		return localcore.PushArtifact(ctx, client, name, tag, platformPath, registryPort)
+	}
+	return localcore.PushPlatformArtifact(ctx, client, platform.Flux, version.Version, name, tag, registryPort)
+}
+
 func newLocalPushCmd() *cobra.Command {
 	var (
 		path, name, tag string
@@ -349,8 +365,20 @@ func newLocalPushCmd() *cobra.Command {
 		Short: "Publish the project as an OCI artifact and reconcile Flux.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			result, err := localcore.PushArtifact(cmd.Context(), localclient.NewKindClient(),
-				name, tag, path, registryPort)
+			client := localclient.NewKindClient()
+			var (
+				result localcore.PushResult
+				err    error
+			)
+			if path == "" && name == localcore.DefaultArtifactName {
+				// The platform artifact: the embedded tree, not the cwd's flux/.
+				result, err = pushPlatform(cmd.Context(), client, "", name, tag, registryPort)
+			} else {
+				if path == "" {
+					path = localcore.DefaultArtifactPath
+				}
+				result, err = localcore.PushArtifact(cmd.Context(), client, name, tag, path, registryPort)
+			}
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -358,7 +386,8 @@ func newLocalPushCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&path, "path", "p", localcore.DefaultArtifactPath, "Directory to package as the OCI artifact.")
+	f.StringVarP(&path, "path", "p", "",
+		"Directory to package as the OCI artifact (default: the embedded platform tree for --name local, else .).")
 	f.StringVar(&name, "name", localcore.DefaultArtifactName, "OCI repository name (matches the OCIRepository).")
 	f.StringVarP(&tag, "tag", "t", localcore.DefaultArtifactTag, "OCI tag.")
 	f.IntVar(&registryPort, "registry-port", localcore.DefaultRegistryPort, "Host port of the local registry.")

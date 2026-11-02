@@ -6,6 +6,9 @@ package local
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 )
 
 // Defaults for local clusters and the OCI push flow.
@@ -15,6 +18,8 @@ const (
 	DefaultRegistryPort = 5001
 	DefaultArtifactName = "local"
 	DefaultArtifactTag  = "latest"
+	// PlatformSource is the provenance stamped on the embedded platform artifact.
+	PlatformSource = "https://github.com/dantofa/platform"
 	// DefaultArtifactPath is the project root: the OCI artifact mirrors the repo
 	// (so the flux/ prefix is present and manifest paths match the git-sourced
 	// DOKS flow); the client whitelists just flux/ so it stays lean and never
@@ -195,11 +200,15 @@ func DeleteCluster(ctx context.Context, client LocalClusterAPI, name string) (st
 // bootstrap's own pre-push), and Flux re-pulls on its interval regardless. So a
 // reconcile failure does not fail the push; the result's Reconciled is "" then.
 func PushArtifact(ctx context.Context, client LocalClusterAPI, name, tag, path string, registryPort int) (PushResult, error) {
-	reference := fmt.Sprintf("localhost:%d/%s:%s", registryPort, name, tag)
 	source, revision, err := client.GitProvenance(ctx)
 	if err != nil {
 		return PushResult{}, err
 	}
+	return pushArtifact(ctx, client, name, tag, path, source, revision, registryPort)
+}
+
+func pushArtifact(ctx context.Context, client LocalClusterAPI, name, tag, path, source, revision string, registryPort int) (PushResult, error) {
+	reference := fmt.Sprintf("localhost:%d/%s:%s", registryPort, name, tag)
 	if err := client.PushArtifact(ctx, "oci://"+reference, path, source, revision); err != nil {
 		return PushResult{}, err
 	}
@@ -211,6 +220,41 @@ func PushArtifact(ctx context.Context, client LocalClusterAPI, name, tag, path s
 		Artifact: reference, Path: path, Source: source,
 		Revision: revision, Reconciled: reconciled,
 	}, nil
+}
+
+// PushPlatformArtifact publishes the platform's own flux/ tree (tree, rooted so
+// paths keep their flux/ prefix -- the dctl binary's embedded copy) as an OCI
+// artifact, stamped with the platform source and revision. It never reads the
+// working directory, so it is correct from any project (a downstream's flux/
+// can't be mistaken for the platform's).
+func PushPlatformArtifact(ctx context.Context, client LocalClusterAPI, tree fs.FS, revision, name, tag string, registryPort int) (PushResult, error) {
+	dir, err := os.MkdirTemp("", "dctl-platform-*")
+	if err != nil {
+		return PushResult{}, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	if err := writeTree(tree, dir); err != nil {
+		return PushResult{}, err
+	}
+	return pushArtifact(ctx, client, name, tag, dir, PlatformSource, revision, registryPort)
+}
+
+// writeTree copies the tree into dir, preserving relative paths.
+func writeTree(tree fs.FS, dir string) error {
+	return fs.WalkDir(tree, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dir, filepath.FromSlash(p))
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		data, err := fs.ReadFile(tree, p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dst, data, 0o644)
+	})
 }
 
 // GetKubeconfig returns the kubeconfig for the named local cluster.

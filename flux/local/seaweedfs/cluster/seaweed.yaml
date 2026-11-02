@@ -10,7 +10,7 @@ metadata:
   namespace: velero
 spec:
   # Local test store; bumped by Renovate (custom manager).
-  image: chrislusf/seaweedfs:4.39
+  image: chrislusf/seaweedfs:4.51
   master:
     replicas: 1
   volume:
