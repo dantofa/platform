@@ -66,6 +66,56 @@ have to manage this by hand: the plugin's `init_hook` **adds their ignore entrie
   directory — so a hand-authored `.claude/settings.json` or your own
   `.claude/skills/<name>/` stays committable.
 
+### Keeping the platform pin current
+
+`dctl`, the `flux/` tree it bootstraps kind clusters from, `.just/cluster.just` and
+`.trivyignore-base` all come from **one platform rev**, so they move together when you
+bump the pin. Nothing updates it for you; a stale pin is a stale platform.
+
+- **devbox** — `devbox update` re-resolves the plugin and rewrites `devbox.lock`
+  (verified: it re-pins the platform's packages to the current platform rev, and the
+  other devbox packages with them). Commit the lock, nothing else (the generated files
+  are build output). To get a weekly PR for it, call the platform's reusable workflow
+  from a scheduled workflow of your own:
+
+  ```yaml
+  name: devbox-update
+  on:
+    schedule: [{ cron: "0 5 * * 1" }]
+    workflow_dispatch:
+  permissions: {}
+  jobs:
+    update:
+      permissions: { contents: write, pull-requests: write }
+      uses: dantofa/platform/.github/workflows/devbox-update.yml@<sha>
+      secrets: { token: "${{ secrets.ACTIONS_TOKEN }}" }
+  ```
+
+  It force-pushes one rolling `devbox-update` branch and opens (or refreshes) a single
+  PR, only when `devbox.lock` changed. Pass a PAT/App token as `token`: PRs made with the
+  default `GITHUB_TOKEN` don't trigger your checks, so your preview wouldn't gate the bump.
+- **Nix flake** — `nix flake update platform` rewrites `flake.lock`. To get a weekly PR
+  for it, extend the platform's Renovate preset. The devbox plugin scaffolds a
+  `renovate.json5` with this when the project has no Renovate config (commit it); it
+  never edits an existing config, and prints a hint if yours lacks the preset. By hand:
+
+  ```json5
+  {
+    extends: [
+      "config:recommended",
+      "github>dantofa/platform//.github/renovate/preset",
+    ],
+  }
+  ```
+
+  It enables Renovate's `nix` manager with `lockFileMaintenance` (Mondays, label
+  `platform`, never automerged). That re-locks **every** flake input, not only
+  `platform`, so treat the PR like any dependency bump.
+
+Gate a bump with your preview (create → deploy → verify) before merging: a new rev can
+change chart versions and policies under your app. Pushing your own `flux/` tree to a
+kind cluster is separate and unchanged: `dctl local cluster push --name <yours>`.
+
 ## Domain conventions
 
 - Every cluster has a `base_domain` (Flux cluster-var `${base_domain}`) — e.g.

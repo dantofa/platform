@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Opt into dantofa/platform bumps. Update flake.lock weekly so platform changes arrive in one gated PR.",
+  "nix": { "enabled": true },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"],
+    "labels": ["platform"],
+    "automerge": false
+  }
+}
