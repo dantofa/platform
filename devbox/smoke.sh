@@ -72,6 +72,26 @@ test "$(cat "$probe/.github/renovate.json")" = "$before" || { echo "existing con
 rm -rf "$probe"
 echo "  ok created once, existing config untouched"
 
+echo "--- consumer gained the devbox-update caller workflow (init_hook) ---"
+test -f .github/workflows/devbox-update.yml || { echo "devbox-update.yml not scaffolded"; exit 1; }
+grep -qF "dantofa/platform/.github/workflows/devbox-update.yml" .github/workflows/devbox-update.yml \
+  || { echo "scaffolded workflow does not call the reusable workflow"; exit 1; }
+echo "  ok scaffolded"
+
+echo "--- ensure-devbox-update creates once, never edits an existing file ---"
+probe="$(mktemp -d)"
+( cd "$probe" && bash "$DEVBOX_PACKAGES_DIR/ensure-devbox-update.sh" >/dev/null )
+test -f "$probe/.github/workflows/devbox-update.yml" || { echo "no workflow created"; exit 1; }
+rm -rf "$probe"
+probe="$(mktemp -d)"
+mkdir -p "$probe/.github/workflows"
+printf 'name: mine\n' > "$probe/.github/workflows/devbox-update.yml"
+( cd "$probe" && bash "$DEVBOX_PACKAGES_DIR/ensure-devbox-update.sh" >/dev/null )
+test "$(cat "$probe/.github/workflows/devbox-update.yml")" = "name: mine" \
+  || { echo "existing workflow was modified"; exit 1; }
+rm -rf "$probe"
+echo "  ok created once, existing file untouched"
+
 echo "--- just cluster … dispatch routes to the flat recipes ---"
 just --dry-run cluster verify backup 2>&1 | grep -q 'cluster-verify'
 just --dry-run cluster verify image-scan 2>&1 | grep -q 'cluster-verify'

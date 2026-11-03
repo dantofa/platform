@@ -157,6 +157,15 @@
           text = builtins.readFile ./devbox/ensure-renovate.sh;
           executable = true;
         };
+        # The init_hook helper that scaffolds the caller of the reusable devbox-update
+        # workflow (create-if-absent; never edits an existing file). Same shape and
+        # reasons as ensure-justfile above.
+        ensure-devbox-update = (pkgsFor system).writeTextFile {
+          name = "ensure-devbox-update";
+          destination = "/ensure-devbox-update.sh";
+          text = builtins.readFile ./devbox/ensure-devbox-update.sh;
+          executable = true;
+        };
         # The CLIs the cluster.just recipes shell out to (dctl comes from
         # `default`), pinned to the same nixpkgs as everything else — bundled for
         # downstream consumers via the devbox plugin so `just cluster …` runs

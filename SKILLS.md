@@ -76,7 +76,9 @@ bump the pin. Nothing updates it for you; a stale pin is a stale platform.
   (verified: it re-pins the platform's packages to the current platform rev, and the
   other devbox packages with them). Commit the lock, nothing else (the generated files
   are build output). To get a weekly PR for it, call the platform's reusable workflow
-  from a scheduled workflow of your own:
+  from a scheduled workflow of your own. The devbox plugin scaffolds this caller into
+  `.github/workflows/devbox-update.yml` when the file is absent (commit it; it never
+  edits an existing one). By hand:
 
   ```yaml
   name: devbox-update
