@@ -94,7 +94,7 @@ bump the pin. Nothing updates it for you; a stale pin is a stale platform.
 
   It force-pushes one rolling `devbox-update` branch and opens (or refreshes) a single
   PR, only when `devbox.lock` changed. The push and PR use a PAT read from your bws
-  project (key `PLATFORM_BUMP_TOKEN` by default), via the `BWS_ACCESS_TOKEN` you already
+  project (key `PLATFORM_UPDATE_TOKEN` by default), via the `BWS_ACCESS_TOKEN` you already
   have for previews: PRs made with the default `GITHUB_TOKEN` don't trigger your checks,
   so your preview wouldn't gate the bump.
 - **Nix flake** — `nix flake update platform` rewrites `flake.lock`. To get a weekly PR

@@ -47,7 +47,7 @@ on:
       token_secret_key:
         description: Key of the bws secret that holds the PAT (injected as an env var of that name).
         type: string
-        default: PLATFORM_BUMP_TOKEN
+        default: PLATFORM_UPDATE_TOKEN
     secrets:
       bws_access_token:
         description: Bitwarden machine-account token able to read the project above.
