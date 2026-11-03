@@ -206,6 +206,17 @@ Two rules keep it portable:
 suppressions every downstream inherits) with an optional local one — so downstream
 only tracks its own app-image CVEs.
 
+### The devbox plugin scaffolds into downstreams
+
+`devbox/plugin.json`'s `init_hook` runs `ensure-*.sh` scripts (packaged by
+`flake.nix`) in every consuming project. Two kinds of output: *generated* files
+(`.just/…`, the skill) are build output and gitignored; *scaffolds* (the `justfile`
+import, `renovate.json5`, `.github/workflows/devbox-update.yml`) are meant to be
+committed, so they are created only when absent and never edited. Adding a scaffold
+changes every downstream on its next `devbox` shell, so make it fail soft with a
+printed hint, and cover create / idempotent / existing-untouched in
+`devbox/smoke.sh`.
+
 ## Conventions & constraints
 
 - **Requires Go 1.26.**
