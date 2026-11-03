@@ -8,9 +8,14 @@ name: devbox-update
 # nix manager only covers flake.lock (see .github/renovate/preset.json).
 #
 # The PR is the gate: the downstream's own checks (its PR-preview workflow
-# included) run on it before anyone merges. For those checks to run at all, pass a
-# PAT / GitHub App token as `secrets.token` -- PRs and pushes made with the default
-# GITHUB_TOKEN do not trigger workflows (same constraint as vendor-hash.yml).
+# included) run on it before anyone merges. For those checks to run at all, the push
+# and the PR must be made with a PAT, not the default GITHUB_TOKEN (whose pushes do
+# not trigger workflows -- same constraint as vendor-hash.yml). The PAT lives in
+# Bitwarden Secrets Manager, next to the other platform credentials, so a caller
+# only needs the BWS_ACCESS_TOKEN it already has for its preview workflow; GitHub
+# itself never stores the PAT. Create it once (fine-grained, contents + pull
+# requests read/write on the calling repos) and add it to the bws project under the
+# key named by `token_secret_key`.
 #
 # Caller (weekly is enough; a daily bump would spin up a billed preview per PR):
 #
@@ -20,9 +25,10 @@ name: devbox-update
 #   permissions: {}
 #   jobs:
 #     update:
-#       permissions: { contents: write, pull-requests: write }
+#       permissions: { contents: read }
 #       uses: dantofa/platform/.github/workflows/devbox-update.yml@<sha>
-#       secrets: { token: "${{ secrets.ACTIONS_TOKEN }}" }
+#       with: { bws_project_id: "${{ vars.BWS_PROJECT_ID }}" }
+#       secrets: { bws_access_token: "${{ secrets.BWS_ACCESS_TOKEN }}" }
 on:
   workflow_call:
     inputs:
@@ -34,12 +40,18 @@ on:
         description: Title of the bump PR.
         type: string
         default: Update devbox.lock (platform and package bump)
+      bws_project_id:
+        description: Bitwarden Secrets Manager project holding the PAT.
+        type: string
+        required: true
+      token_secret_key:
+        description: Key of the bws secret that holds the PAT (injected as an env var of that name).
+        type: string
+        default: PLATFORM_BUMP_TOKEN
     secrets:
-      token:
-        description: >-
-          PAT or GitHub App token with contents:write and pull-requests:write, so the
-          PR's checks run. Falls back to the default GITHUB_TOKEN (checks will not run).
-        required: false
+      bws_access_token:
+        description: Bitwarden machine-account token able to read the project above.
+        required: true
 permissions: {}
 env:
   FORCE_COLOR: ""
@@ -54,14 +66,12 @@ jobs:
       group: devbox-update-${{ inputs.branch }}
       cancel-in-progress: false
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read # writes go through the bws-held PAT, not GITHUB_TOKEN
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          token: ${{ secrets.token || github.token }}
-          persist-credentials: true # the push below authenticates with it
+          persist-credentials: false # the push below authenticates with the PAT
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
@@ -72,15 +82,16 @@ jobs:
           # --no-install: re-resolve and rewrite the lock only; nothing is built.
           devbox update --no-install
 
-      - name: Push the bump and open the PR
+      - name: Commit the bump
+        id: commit
         env:
-          GH_TOKEN: ${{ secrets.token || github.token }}
           BRANCH: ${{ inputs.branch }}
           TITLE: ${{ inputs.title }}
         run: |
           set -euo pipefail
           if git diff --quiet -- devbox.lock; then
             echo "devbox.lock already current; nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -88,11 +99,34 @@ jobs:
           git switch -c "$BRANCH"
           git add devbox.lock
           git commit -m "$TITLE"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # `bws run` injects the project's secrets as env vars; the PAT arrives as
+      # $<token_secret_key> and is used only by this one script. bws is unfree, so it
+      # comes from the platform flake's `api` dev shell rather than the nix cache.
+      - name: Push the bump and open the PR
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.bws_access_token }}
+          BWS_PROJECT_ID: ${{ inputs.bws_project_id }}
+          TOKEN_KEY: ${{ inputs.token_secret_key }}
+          BRANCH: ${{ inputs.branch }}
+          TITLE: ${{ inputs.title }}
+          REPO: ${{ github.repository }}
+        run: |
+          cat > "$RUNNER_TEMP/push-and-pr.sh" <<'SCRIPT'
+          set -euo pipefail
+          token="${!TOKEN_KEY:?bws project has no secret named ${TOKEN_KEY}}"
+          echo "::add-mask::${token}"
+          export GH_TOKEN="$token"
           # Rolling branch: always rebuilt from the base, so a stale bump never lingers.
-          git push --force origin "HEAD:refs/heads/${BRANCH}"
+          git push --force "https://x-access-token:${token}@github.com/${REPO}.git" "HEAD:refs/heads/${BRANCH}"
           if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
             echo "A bump PR is already open; the force-push updated it."
             exit 0
           fi
           gh pr create --head "$BRANCH" --title "$TITLE" \
             --body "Automated \`devbox update\`: re-resolves the dantofa platform plugin and the other devbox packages. Review the preview results before merging."
+          SCRIPT
+          nix develop github:dantofa/platform#api --command \
+            bws run --project-id "$BWS_PROJECT_ID" -- bash "$RUNNER_TEMP/push-and-pr.sh"
