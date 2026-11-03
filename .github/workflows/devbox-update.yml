@@ -1,0 +1,98 @@
+---
+name: devbox-update
+# Reusable workflow (`workflow_call`) for downstream projects: re-resolve the
+# devbox lock (`devbox update --no-install`, which re-pins the dantofa platform
+# plugin -- dctl, the embedded flux/ tree, cluster.just, trivyignore-base -- and
+# every other devbox package) and open ONE rolling PR when devbox.lock changed.
+# Replaces the by-hand `devbox update` for devbox-pinned consumers; Renovate's
+# nix manager only covers flake.lock (see .github/renovate/preset.json).
+#
+# The PR is the gate: the downstream's own checks (its PR-preview workflow
+# included) run on it before anyone merges. For those checks to run at all, pass a
+# PAT / GitHub App token as `secrets.token` -- PRs and pushes made with the default
+# GITHUB_TOKEN do not trigger workflows (same constraint as vendor-hash.yml).
+#
+# Caller (weekly is enough; a daily bump would spin up a billed preview per PR):
+#
+#   on:
+#     schedule: [{ cron: "0 5 * * 1" }]
+#     workflow_dispatch:
+#   permissions: {}
+#   jobs:
+#     update:
+#       permissions: { contents: write, pull-requests: write }
+#       uses: dantofa/platform/.github/workflows/devbox-update.yml@<sha>
+#       secrets: { token: "${{ secrets.ACTIONS_TOKEN }}" }
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: Branch the rolling bump PR is pushed to.
+        type: string
+        default: devbox-update
+      title:
+        description: Title of the bump PR.
+        type: string
+        default: Update devbox.lock (platform and package bump)
+    secrets:
+      token:
+        description: >-
+          PAT or GitHub App token with contents:write and pull-requests:write, so the
+          PR's checks run. Falls back to the default GITHUB_TOKEN (checks will not run).
+        required: false
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  NO_COLOR: "1"
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # One run per branch, never cancelled midway: an interrupted push/PR step
+    # could leave the rolling branch half-updated.
+    concurrency:
+      group: devbox-update-${{ inputs.branch }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          token: ${{ secrets.token || github.token }}
+          persist-credentials: true # the push below authenticates with it
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Update devbox.lock
+        run: |
+          nix profile install nixpkgs#devbox
+          # --no-install: re-resolve and rewrite the lock only; nothing is built.
+          devbox update --no-install
+
+      - name: Push the bump and open the PR
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+          BRANCH: ${{ inputs.branch }}
+          TITLE: ${{ inputs.title }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- devbox.lock; then
+            echo "devbox.lock already current; nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add devbox.lock
+          git commit -m "$TITLE"
+          # Rolling branch: always rebuilt from the base, so a stale bump never lingers.
+          git push --force origin "HEAD:refs/heads/${BRANCH}"
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            echo "A bump PR is already open; the force-push updated it."
+            exit 0
+          fi
+          gh pr create --head "$BRANCH" --title "$TITLE" \
+            --body "Automated \`devbox update\`: re-resolves the dantofa platform plugin and the other devbox packages. Review the preview results before merging."

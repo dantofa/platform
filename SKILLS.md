@@ -72,8 +72,28 @@ have to manage this by hand: the plugin's `init_hook` **adds their ignore entrie
 `.trivyignore-base` all come from **one platform rev**, so they move together when you
 bump the pin. Nothing updates it for you; a stale pin is a stale platform.
 
-- **devbox** — `devbox update` re-resolves the plugin and rewrites `devbox.lock`.
-  Commit the lock, nothing else (the generated files are build output).
+- **devbox** — `devbox update` re-resolves the plugin and rewrites `devbox.lock`
+  (verified: it re-pins the platform's packages to the current platform rev, and the
+  other devbox packages with them). Commit the lock, nothing else (the generated files
+  are build output). To get a weekly PR for it, call the platform's reusable workflow
+  from a scheduled workflow of your own:
+
+  ```yaml
+  name: devbox-update
+  on:
+    schedule: [{ cron: "0 5 * * 1" }]
+    workflow_dispatch:
+  permissions: {}
+  jobs:
+    update:
+      permissions: { contents: write, pull-requests: write }
+      uses: dantofa/platform/.github/workflows/devbox-update.yml@<sha>
+      secrets: { token: "${{ secrets.ACTIONS_TOKEN }}" }
+  ```
+
+  It force-pushes one rolling `devbox-update` branch and opens (or refreshes) a single
+  PR, only when `devbox.lock` changed. Pass a PAT/App token as `token`: PRs made with the
+  default `GITHUB_TOKEN` don't trigger your checks, so your preview wouldn't gate the bump.
 - **Nix flake** — `nix flake update platform` rewrites `flake.lock`. To get a weekly PR
   for it, extend the platform's Renovate preset. The devbox plugin scaffolds a
   `renovate.json5` with this when the project has no Renovate config (commit it); it
