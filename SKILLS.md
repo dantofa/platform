@@ -193,6 +193,17 @@ spec:
       --revision main --secret-ref app-deploy-key
   ```
 
+  In CI, skip assembling the URL and branch: `--from-ci` infers whichever of
+  `--url`/`--revision` you omit — under GitHub Actions from the environment (on
+  `pull_request` events the **PR head branch**, never the `<n>/merge` ref), otherwise from
+  the checkout's `origin` remote and current branch — and prints what it inferred. Remotes
+  are normalized to https with credentials stripped, so it composes with `--token`. A fork
+  PR's branch lives in the fork, so pass `--url` there.
+
+  ```sh
+  dctl flux source create app --type git --from-ci ${DCTL_SOURCE_TOKEN:+--token "$DCTL_SOURCE_TOKEN"}
+  ```
+
   The same flags work for `--type oci` against a private registry (dctl mints a
   dockerconfigjson pull secret there). The auth flags are **declarative**: `source
   create` rewrites the whole source, so a later call without them leaves it

@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	fluxclient "github.com/dantofa/platform/internal/clients/flux"
+	gitclient "github.com/dantofa/platform/internal/clients/git"
 	"github.com/dantofa/platform/internal/clients/kube"
 	fluxcore "github.com/dantofa/platform/internal/core/flux"
 	"github.com/dantofa/platform/internal/render"
@@ -54,7 +55,7 @@ func parseSourceType(v string) (fluxcore.SourceType, error) {
 
 func newSourceCreateCmd(kubeconfig *string) *cobra.Command {
 	var url, sourceType, revision, secretRef, token, username string
-	var insecure bool
+	var insecure, fromCI bool
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create or update an OCIRepository or GitRepository source. Idempotent.",
@@ -66,12 +67,32 @@ func newSourceCreateCmd(kubeconfig *string) *cobra.Command {
 			"--secret-ref.\n\n" +
 			"The auth flags are declarative like every other flag here: this command " +
 			"rewrites the whole source, so a later call that omits them leaves the " +
-			"source unauthenticated. Pass them every time.",
+			"source unauthenticated. Pass them every time.\n\n" +
+			"For a git source, --from-ci infers whichever of --url/--revision you omit: " +
+			"under GitHub Actions from the environment (the PR head branch on " +
+			"pull_request events, never the merge ref), otherwise from the checkout's " +
+			"origin remote and current branch. What it inferred is printed to stderr.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := parseSourceType(sourceType)
 			if err != nil {
 				return render.Fail(err)
+			}
+			if fromCI {
+				if st != fluxcore.SourceGit {
+					return render.Fail(fmt.Errorf("--from-ci only applies to --type %q", fluxcore.SourceGit))
+				}
+				inferred, err := fluxcore.InferGitSource(cmd.Context(), os.Getenv, gitclient.New(), url, revision)
+				if err != nil {
+					return render.Fail(err)
+				}
+				if inferred.URLFrom != "" {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "inferred --url %s (from %s)\n", inferred.URL, inferred.URLFrom)
+				}
+				if inferred.RevisionFrom != "" {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "inferred --revision %s (from %s)\n", inferred.Revision, inferred.RevisionFrom)
+				}
+				url, revision = inferred.URL, inferred.Revision
 			}
 			if revision == "" {
 				revision = st.DefaultRevision()
@@ -102,8 +123,10 @@ func newSourceCreateCmd(kubeconfig *string) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&url, "url", "", "URL of the source (oci://... or a git URL).")
-	_ = cmd.MarkFlagRequired("url")
+	f.StringVar(&url, "url", "", "URL of the source (oci://... or a git URL). Required unless --from-ci.")
+	f.BoolVar(&fromCI, "from-ci", false,
+		"Git only: infer an omitted --url/--revision from GitHub Actions, else the checkout's origin and branch.")
+	cmd.MarkFlagsOneRequired("url", "from-ci")
 	f.StringVar(&sourceType, "type", string(fluxcore.DefaultSourceType), `Source type: "oci" or "git".`)
 	f.StringVar(&revision, "revision", "", `Revision to track: an OCI tag or git branch (default: "latest" for oci, "master" for git).`)
 	f.BoolVar(&insecure, "insecure", false, "Allow a plain-HTTP OCI registry (the in-cluster kind registry).")
