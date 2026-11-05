@@ -1,0 +1,256 @@
+---
+name: preview
+# Reusable workflow (`workflow_call`) for downstream projects: one ephemeral DOKS
+# cluster per pull request. It runs the platform half of a PR preview -- create,
+# bootstrap, health, image scan, diagnostics, teardown -- and calls back into the
+# project only through the two commands the caller passes (`deploy`, `verify`),
+# which keeps cluster.just's rule that platform recipes never call project recipes.
+#
+# What it gets right so each downstream does not have to:
+#   - one concurrency group per PR, never cancelled midway: an interrupted create or
+#     delete leaks billed infrastructure, and a `closed` teardown queues behind a
+#     running `synchronize` instead of racing it;
+#   - skips fork PRs, which get no secrets;
+#   - a unique cluster per PR (<cluster_prefix><PR number>) and a unique base domain
+#     under it (<cluster>.<domain_suffix>): the Cloudflare tunnel is named after the
+#     cluster, so two previews sharing a name share or fight over one tunnel and its
+#     DNS records;
+#   - teardown on `closed`, plus a failure diagnostics artifact.
+#
+# Credentials: only BWS_ACCESS_TOKEN is passed in. Everything else (the DigitalOcean
+# token, Cloudflare, ...) is read from the bws project by `bws run`, which injects
+# the project's secrets into every command below -- including your `deploy` and
+# `verify`. Keep the project to credentials a preview may use.
+#
+# Your commands run inside `devbox run --`, with these in their environment:
+#   PR_NUMBER      the pull request number
+#   PR_HEAD_SHA    the PR's head commit (github.event.pull_request.head.sha); on a
+#                  pull_request event GITHUB_SHA is the merge commit, not this
+#   DOKS_CLUSTER, DOKS_BASE_DOMAIN, KUBECONFIG
+#
+# Caller (the devbox plugin scaffolds this, disabled until PR_PREVIEW_ENABLED=true):
+#
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, closed]
+#   permissions: {}
+#   jobs:
+#     preview:
+#       permissions: { contents: read, deployments: write }
+#       uses: dantofa/platform/.github/workflows/preview.yml@<sha>
+#       with:
+#         cluster_prefix: myapp-pr
+#         domain_suffix: preview.example.dev
+#         bws_project_id: ${{ vars.BWS_PROJECT_ID }}
+#         bws_organization_id: ${{ vars.BWS_ORGANIZATION_ID }}
+#         deploy: just deploy
+#         verify: just verify
+#       secrets: { bws_access_token: "${{ secrets.BWS_ACCESS_TOKEN }}" }
+on:
+  workflow_call:
+    inputs:
+      cluster_prefix:
+        description: >-
+          Cluster name prefix; the PR number is appended (`myapp-pr` -> `myapp-pr42`).
+          Lowercase letters, digits and dashes; must be unique per Cloudflare account.
+        type: string
+        required: true
+      domain_suffix:
+        description: >-
+          Base domain suffix; the preview's base domain is `<cluster>.<suffix>`.
+        type: string
+        required: true
+      bws_project_id:
+        description: Bitwarden Secrets Manager project holding the preview credentials.
+        type: string
+        required: true
+      bws_organization_id:
+        description: Bitwarden organization id (scopes the cluster's ClusterSecretStore).
+        type: string
+        required: true
+      deploy:
+        description: Command that deploys your app to the cluster (run in `devbox run --`).
+        type: string
+        required: true
+      verify:
+        description: Command that verifies your app on the cluster (run in `devbox run --`).
+        type: string
+        required: true
+      env:
+        description: Deployment environment label passed to `bootstrap --env`.
+        type: string
+        default: preview
+      environment_name:
+        description: GitHub environment the deployment is recorded against.
+        type: string
+        default: preview
+      environment_url:
+        description: >-
+          Environment URL template; `{base_domain}` is replaced by the preview's base
+          domain.
+        type: string
+        default: "https://{base_domain}"
+    secrets:
+      bws_access_token:
+        description: Bitwarden machine-account token able to read the project above.
+        required: true
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  NO_COLOR: "1"
+# One run per PR, never cancelled midway. `closed` queues behind an in-flight
+# `synchronize`, so a teardown cannot race the create it is meant to undo.
+concurrency:
+  group: preview-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  up:
+    # Fork PRs get no secrets, so there is nothing to provision with.
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      deployments: write # records the deployment against the environment
+    environment:
+      name: ${{ inputs.environment_name }}
+      url: ${{ steps.names.outputs.url }}
+    env:
+      KUBECONFIG: ${{ github.workspace }}/.kubeconfig
+      BWS_ACCESS_TOKEN: ${{ secrets.bws_access_token }}
+      BWS_PROJECT_ID: ${{ inputs.bws_project_id }}
+      BWS_ORGANIZATION_ID: ${{ inputs.bws_organization_id }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Install devbox and the command wrapper
+        run: |
+          nix profile install nixpkgs#devbox
+          # Every project/platform command runs as: bws injects the project's
+          # secrets (bws is unfree, so it comes from the platform flake's `api`
+          # dev shell), then devbox loads the project's toolchain and env.
+          cat > "$RUNNER_TEMP/dev.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec nix develop github:dantofa/platform#api --command \
+            bws run --project-id "$BWS_PROJECT_ID" -- devbox run -- "$@"
+          SCRIPT
+          chmod +x "$RUNNER_TEMP/dev.sh"
+
+      - name: Derive the preview's names
+        id: names
+        env:
+          PREFIX: ${{ inputs.cluster_prefix }}
+          SUFFIX: ${{ inputs.domain_suffix }}
+          URL_TEMPLATE: ${{ inputs.environment_url }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          cluster="${PREFIX}${NUMBER}"
+          if ! [[ "$cluster" =~ ^[a-z][a-z0-9-]{1,40}$ ]]; then
+            echo "::error::cluster name '${cluster}' (cluster_prefix + PR number) must be lowercase letters, digits and dashes"
+            exit 1
+          fi
+          base_domain="${cluster}.${SUFFIX}"
+          url="${URL_TEMPLATE//\{base_domain\}/${base_domain}}"
+          {
+            echo "url=${url}"
+            echo "DOKS_CLUSTER=${cluster}"
+            echo "DOKS_BASE_DOMAIN=${base_domain}"
+            echo "PR_NUMBER=${NUMBER}"
+            echo "PR_HEAD_SHA=${HEAD_SHA}"
+          } | tee -a "$GITHUB_OUTPUT" >> "$GITHUB_ENV"
+
+      - name: Create the cluster (or reuse it on a re-push)
+        run: |
+          "$RUNNER_TEMP/dev.sh" just cluster doks connect \
+            || "$RUNNER_TEMP/dev.sh" just cluster doks create
+
+      - name: Bootstrap the platform
+        env:
+          PREVIEW_ENV: ${{ inputs.env }}
+        run: '"$RUNNER_TEMP/dev.sh" just cluster doks bootstrap --env "$PREVIEW_ENV"'
+
+      - name: Fetch the kubeconfig
+        run: '"$RUNNER_TEMP/dev.sh" just cluster doks connect'
+
+      - name: Verify the platform is healthy
+        run: '"$RUNNER_TEMP/dev.sh" just cluster verify health'
+
+      # Project commands arrive in env vars, never interpolated into the script
+      # text, so a crafted input cannot break out of the shell command.
+      - name: Deploy the project
+        env:
+          DEPLOY: ${{ inputs.deploy }}
+        run: '"$RUNNER_TEMP/dev.sh" bash -c "$DEPLOY"'
+
+      - name: Verify the project
+        env:
+          VERIFY: ${{ inputs.verify }}
+        run: '"$RUNNER_TEMP/dev.sh" bash -c "$VERIFY"'
+
+      - name: Scan the cluster's images
+        run: '"$RUNNER_TEMP/dev.sh" just cluster verify image-scan'
+
+      - name: Capture failure diagnostics
+        if: failure()
+        run: '"$RUNNER_TEMP/dev.sh" just cluster debug || true'
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preview-diagnostics
+          path: preview-diagnostics
+          if-no-files-found: ignore
+
+  down:
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      BWS_ACCESS_TOKEN: ${{ secrets.bws_access_token }}
+      BWS_PROJECT_ID: ${{ inputs.bws_project_id }}
+      BWS_ORGANIZATION_ID: ${{ inputs.bws_organization_id }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Install devbox and the command wrapper
+        run: |
+          nix profile install nixpkgs#devbox
+          cat > "$RUNNER_TEMP/dev.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec nix develop github:dantofa/platform#api --command \
+            bws run --project-id "$BWS_PROJECT_ID" -- devbox run -- "$@"
+          SCRIPT
+          chmod +x "$RUNNER_TEMP/dev.sh"
+
+      - name: Delete the preview cluster
+        env:
+          PREFIX: ${{ inputs.cluster_prefix }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          DOKS_CLUSTER="${PREFIX}${NUMBER}"
+          export DOKS_CLUSTER
+          "$RUNNER_TEMP/dev.sh" just cluster doks delete

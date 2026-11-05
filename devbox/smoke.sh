@@ -92,6 +92,37 @@ test "$(cat "$probe/.github/workflows/devbox-update.yml")" = "name: mine" \
 rm -rf "$probe"
 echo "  ok created once, existing file untouched"
 
+echo "--- consumer gained the preview caller workflow, disabled until opt-in (init_hook) ---"
+test -f .github/workflows/preview.yml || { echo "preview.yml not scaffolded"; exit 1; }
+grep -qF "dantofa/platform/.github/workflows/preview.yml" .github/workflows/preview.yml \
+  || { echo "scaffolded workflow does not call the reusable workflow"; exit 1; }
+grep -qF "vars.PR_PREVIEW_DOMAIN_SUFFIX != ''" .github/workflows/preview.yml \
+  || { echo "scaffolded preview is not opt-in (billed clusters per PR)"; exit 1; }
+echo "  ok scaffolded, opt-in guard present"
+
+echo "--- ensure-preview creates once, never edits an existing file ---"
+probe="$(mktemp -d)"
+( cd "$probe" && bash "$DEVBOX_PACKAGES_DIR/ensure-preview.sh" >/dev/null )
+test -f "$probe/.github/workflows/preview.yml" || { echo "no workflow created"; exit 1; }
+rm -rf "$probe"
+probe="$(mktemp -d)"
+mkdir -p "$probe/.github/workflows"
+printf 'name: mine\n' > "$probe/.github/workflows/preview.yml"
+( cd "$probe" && bash "$DEVBOX_PACKAGES_DIR/ensure-preview.sh" >/dev/null )
+test "$(cat "$probe/.github/workflows/preview.yml")" = "name: mine" \
+  || { echo "existing workflow was modified"; exit 1; }
+rm -rf "$probe"
+echo "  ok created once, existing file untouched"
+
+echo "--- ensure-preview leaves a project that already has preview.yaml alone ---"
+probe="$(mktemp -d)"
+mkdir -p "$probe/.github/workflows"
+printf 'name: mine\n' > "$probe/.github/workflows/preview.yaml"
+( cd "$probe" && bash "$DEVBOX_PACKAGES_DIR/ensure-preview.sh" >/dev/null )
+test ! -e "$probe/.github/workflows/preview.yml" || { echo "scaffolded next to an existing preview.yaml"; exit 1; }
+rm -rf "$probe"
+echo "  ok no second preview workflow"
+
 echo "--- just cluster … dispatch routes to the flat recipes ---"
 just --dry-run cluster verify backup 2>&1 | grep -q 'cluster-verify'
 just --dry-run cluster verify image-scan 2>&1 | grep -q 'cluster-verify'

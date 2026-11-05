@@ -285,6 +285,33 @@ the same gates.
 
 A downstream e2e is your own recipe: `create → deploy your app → test → delete`.
 
+### Automated PR previews
+
+`.github/workflows/preview.yml` is a reusable workflow that gives every pull request
+its own DOKS cluster and tears it down on close, so you do not copy the platform half
+of a preview workflow. The devbox plugin scaffolds the caller into
+`.github/workflows/preview.yml` when absent (commit it; it never edits an existing
+one). **It is off until you opt in**, because each PR then creates a billed cluster:
+set the repository variable `PR_PREVIEW_DOMAIN_SUFFIX` (the domain previews are served
+under, e.g. `preview.example.dev`), and replace the scaffold's `deploy: just deploy` /
+`verify: just verify` with your commands. It needs the `BWS_ACCESS_TOKEN` secret and the
+`BWS_PROJECT_ID` / `BWS_ORGANIZATION_ID` variables; everything else (the DigitalOcean
+token, Cloudflare) is read from the bws project.
+
+- **Per-PR names:** the cluster is `<cluster_prefix><PR number>` (`myapp-pr42`) and its
+  base domain `<cluster>.<domain_suffix>`, both unique per PR (the Cloudflare tunnel is
+  named after the cluster).
+- **Platform steps, in order:** create or reuse the cluster → bootstrap (`--env`) →
+  kubeconfig → `cluster verify health` → your `deploy` → your `verify` →
+  `cluster verify image-scan`; on failure `cluster debug` is uploaded as the
+  `preview-diagnostics` artifact. On `closed` the cluster is deleted.
+- **Your commands** run inside `devbox run --` with `PR_NUMBER`, `PR_HEAD_SHA` (the PR's
+  head commit — `GITHUB_SHA` is the merge commit on `pull_request` events, so use this
+  to check what is deployed is this PR's build), `DOKS_CLUSTER`, `DOKS_BASE_DOMAIN` and
+  `KUBECONFIG` set. The project's bws secrets are injected into them too.
+- **Safety:** one concurrency group per PR, never cancelled midway (an interrupted
+  create or delete leaks billed infrastructure); fork PRs are skipped (no secrets).
+
 ### Which TLS issuer applies where
 
 `--tls-issuer` is a **DOKS-only** flag, and even there it only takes effect with
