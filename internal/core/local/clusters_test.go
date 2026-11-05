@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"testing/fstest"
+
+	fluxcore "github.com/dantofa/platform/internal/core/flux"
 )
 
 type fakeLocalAPI struct {
@@ -141,5 +143,44 @@ func TestPushPlatformArtifactPublishesEmbeddedTree(t *testing.T) {
 	}
 	if _, err := os.Stat(f.pushedPath); !os.IsNotExist(err) {
 		t.Errorf("temp tree not cleaned up: %v", err)
+	}
+}
+
+type fakeEngine struct{ created []fluxcore.SourceSpec }
+
+func (e *fakeEngine) Install(context.Context, string) error { return nil }
+func (e *fakeEngine) CreateGitSource(context.Context, fluxcore.SourceSpec) error {
+	return nil
+}
+
+func (e *fakeEngine) DeleteGitSource(context.Context, string) error { return nil }
+func (e *fakeEngine) CreateOCISource(_ context.Context, spec fluxcore.SourceSpec) error {
+	e.created = append(e.created, spec)
+	return nil
+}
+func (e *fakeEngine) DeleteOCISource(context.Context, string) error     { return nil }
+func (e *fakeEngine) DeleteKustomization(context.Context, string) error { return nil }
+
+func TestRegisterSourcePointsAtTheInClusterRegistry(t *testing.T) {
+	f, e := &fakeLocalAPI{}, &fakeEngine{}
+	got, err := RegisterSource(context.Background(), f, e, DefaultRegistryName, "auth", "latest")
+	if err != nil || got != "auth" {
+		t.Fatalf("got %q err %v", got, err)
+	}
+	if len(e.created) != 1 {
+		t.Fatalf("want one source, got %d", len(e.created))
+	}
+	spec := e.created[0]
+	if spec.Type != fluxcore.SourceOCI || spec.Name != "auth" || !spec.Insecure ||
+		spec.Revision != "latest" || spec.URL != "oci://172.18.0.6:5000/auth" {
+		t.Errorf("wrong source: %+v", spec)
+	}
+}
+
+func TestRegisterSourceSkipsThePlatformArtifact(t *testing.T) {
+	f, e := &fakeLocalAPI{}, &fakeEngine{}
+	got, err := RegisterSource(context.Background(), f, e, DefaultRegistryName, DefaultArtifactName, "latest")
+	if err != nil || got != "" || len(e.created) != 0 {
+		t.Fatalf("platform artifact must not get a second source: %q %v %+v", got, err, e.created)
 	}
 }

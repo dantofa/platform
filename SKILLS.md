@@ -162,7 +162,11 @@ spec:
 
 - The platform reconciles from ONE source (a `GitRepository` on DOKS, an
   `OCIRepository` on kind), registered at bootstrap. Downstream layers its **own
-  payload** as an additional reconcile root pointed at the same source.
+  payload** as an additional reconcile root. On DOKS that root points at the same
+  source. On kind your tree is a **separate OCI artifact**: `dctl local cluster push
+  --name <yours>` publishes it and creates the `OCIRepository` `<yours>` on the
+  cluster (pointed at the in-cluster registry; no kubectl lookup), so your root's
+  `sourceRef` is `OCIRepository/<yours>`. Use `--cluster` if it is not named `local`.
 - A **reconcile root** is a Flux `Kustomization` CR with `wait: true`, a
   source-agnostic `sourceRef` (`${source_kind}`/`${source_name}`), and
   `postBuild.substituteFrom` the `cluster-vars` ConfigMap. Add `dependsOn` to order

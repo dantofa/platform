@@ -33,7 +33,7 @@
 - [DONE] Add SKILLS.md file to devbox plugin so Claude agents on downstream projects can effectively use the primitives implemented here
 - [DONE] Give the local (kind) cluster a TLS cert whose SANs actually match `${base_domain}`, so `https://` can be verified rather than only ignored
 - [DEFERRED] Make the local cert publicly trusted, so tools work with TLS encryption out of the box. Only a real ACME cert stored in BWS achieves this
-- Add a tenant/app-namespace onboarding template (namespace + quota + limits + isolation NetworkPolicy) — deferred until a downstream app informs its shape
+- Make the tenant/app-namespace onboarding template referenceable instead of copied (#79) — dantofa/auth is the downstream app that informed its shape
 
 ## Monitoring
 

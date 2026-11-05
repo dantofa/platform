@@ -357,14 +357,20 @@ func pushPlatform(ctx context.Context, client *localclient.KindClient, platformP
 
 func newLocalPushCmd() *cobra.Command {
 	var (
-		path, name, tag string
-		registryPort    int
+		path, name, tag, cluster, registryName string
+		registryPort                           int
 	)
 	cmd := &cobra.Command{
 		Use:   "push",
-		Short: "Publish the project as an OCI artifact and reconcile Flux.",
-		Args:  cobra.NoArgs,
+		Short: "Publish the project as an OCI artifact and register its Flux source.",
+		Long: "Publish a directory as an OCI artifact to the local registry. For a " +
+			"downstream artifact (any --name other than the platform's `local`), also " +
+			"create or update the matching OCIRepository on the cluster, pointed at the " +
+			"in-cluster registry, so no registry URL needs deriving. The source is " +
+			"skipped when --cluster does not exist (the artifact is still published).",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
 			client := localclient.NewKindClient()
 			var (
 				result localcore.PushResult
@@ -372,13 +378,32 @@ func newLocalPushCmd() *cobra.Command {
 			)
 			if path == "" && name == localcore.DefaultArtifactName {
 				// The platform artifact: the embedded tree, not the cwd's flux/.
-				result, err = pushPlatform(cmd.Context(), client, "", name, tag, registryPort)
+				result, err = pushPlatform(ctx, client, "", name, tag, registryPort)
 			} else {
 				if path == "" {
 					path = localcore.DefaultArtifactPath
 				}
-				result, err = localcore.PushArtifact(cmd.Context(), client, name, tag, path, registryPort)
+				result, err = localcore.PushArtifact(ctx, client, name, tag, path, registryPort)
 			}
+			if err != nil {
+				return render.Fail(err)
+			}
+
+			kubeconfig, err := localcore.GetKubeconfig(ctx, client, cluster)
+			var notFound *localcore.LocalClusterNotFoundError
+			switch {
+			case errors.As(err, &notFound):
+				return render.JSON(result) // no cluster yet: published only
+			case err != nil:
+				return render.Fail(err)
+			}
+			kubePath, cleanup, err := writeTempKubeconfig([]byte(kubeconfig))
+			if err != nil {
+				return render.Fail(err)
+			}
+			defer cleanup()
+			result.OCIRepository, err = localcore.RegisterSource(ctx, client,
+				fluxclient.New(kubePath), registryName, name, tag)
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -388,8 +413,10 @@ func newLocalPushCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVarP(&path, "path", "p", "",
 		"Directory to package as the OCI artifact (default: the embedded platform tree for --name local, else .).")
-	f.StringVar(&name, "name", localcore.DefaultArtifactName, "OCI repository name (matches the OCIRepository).")
+	f.StringVar(&name, "name", localcore.DefaultArtifactName, "OCI repository name (also the OCIRepository's name).")
 	f.StringVarP(&tag, "tag", "t", localcore.DefaultArtifactTag, "OCI tag.")
+	f.StringVar(&cluster, "cluster", localcore.DefaultClusterName, "Local cluster to register the OCIRepository on.")
+	f.StringVar(&registryName, "registry-name", localcore.DefaultRegistryName, "In-cluster OCI registry name the OCIRepository pulls from.")
 	f.IntVar(&registryPort, "registry-port", localcore.DefaultRegistryPort, "Host port of the local registry.")
 	return cmd
 }
