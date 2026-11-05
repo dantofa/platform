@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	fluxcore "github.com/dantofa/platform/internal/core/flux"
 )
 
 // Defaults for local clusters and the OCI push flow.
@@ -16,7 +18,10 @@ const (
 	DefaultClusterName  = "local"
 	DefaultRegistryName = "kind-registry"
 	DefaultRegistryPort = 5001
-	DefaultArtifactName = "local"
+	// DefaultArtifactName is the platform artifact bootstrap publishes. It shares
+	// the Flux source's name (the source `platform` pulls oci://…/platform), so one
+	// name identifies the artifact, its OCIRepository, and what `push` reconciles.
+	DefaultArtifactName = fluxcore.DefaultSourceName
 	DefaultArtifactTag  = "latest"
 	// PlatformSource is the provenance stamped on the embedded platform artifact.
 	PlatformSource = "https://github.com/dantofa/platform"
@@ -134,6 +139,9 @@ type PushResult struct {
 	Source     string `json:"source"`
 	Revision   string `json:"revision"`
 	Reconciled string `json:"reconciled"`
+	// OCIRepository names the Flux source registered for the artifact on the
+	// cluster; empty when none was (the platform artifact, or no cluster).
+	OCIRepository string `json:"oci_repository,omitempty"`
 }
 
 func contains(items []string, target string) bool {
@@ -267,4 +275,29 @@ func GetKubeconfig(ctx context.Context, client LocalClusterAPI, name string) (st
 		return "", &LocalClusterNotFoundError{Name: name}
 	}
 	return client.GetKubeconfig(ctx, name)
+}
+
+// RegisterSource registers the in-cluster OCIRepository that pulls the artifact
+// `name` (create-or-update, idempotent), so a downstream needs no kubectl lookup of
+// the registry URL: the registry's in-cluster address and the source's shape are
+// this package's own knowledge (see InClusterArtifactURL). The source takes the
+// artifact's name. The platform artifact is skipped (returns "", nil): bootstrap
+// registers it under its own source name, and a second source for the same
+// artifact would only duplicate it.
+func RegisterSource(ctx context.Context, client LocalClusterAPI, eng fluxcore.Engine, registryName, name, tag string) (string, error) {
+	if name == DefaultArtifactName {
+		return "", nil
+	}
+	url, err := InClusterArtifactURL(ctx, client, registryName, name)
+	if err != nil {
+		return "", err
+	}
+	// Insecure: the in-cluster kind registry is plain HTTP.
+	res, err := fluxcore.AddSource(ctx, eng, nil, fluxcore.SourceSpec{
+		Type: fluxcore.SourceOCI, Name: name, URL: url, Revision: tag, Insecure: true,
+	})
+	if err != nil {
+		return "", err
+	}
+	return res.Source, nil
 }
