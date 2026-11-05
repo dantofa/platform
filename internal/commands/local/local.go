@@ -364,7 +364,7 @@ func newLocalPushCmd() *cobra.Command {
 		Use:   "push",
 		Short: "Publish the project as an OCI artifact and register its Flux source.",
 		Long: "Publish a directory as an OCI artifact to the local registry. For a " +
-			"downstream artifact (any --name other than the platform's `local`), also " +
+			"downstream artifact (any --name other than the platform's `platform`), also " +
 			"create or update the matching OCIRepository on the cluster, pointed at the " +
 			"in-cluster registry, so no registry URL needs deriving. The source is " +
 			"skipped when --cluster does not exist (the artifact is still published).",
@@ -412,7 +412,7 @@ func newLocalPushCmd() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVarP(&path, "path", "p", "",
-		"Directory to package as the OCI artifact (default: the embedded platform tree for --name local, else .).")
+		"Directory to package as the OCI artifact (default: the embedded platform tree for --name platform, else .).")
 	f.StringVar(&name, "name", localcore.DefaultArtifactName, "OCI repository name (also the OCIRepository's name).")
 	f.StringVarP(&tag, "tag", "t", localcore.DefaultArtifactTag, "OCI tag.")
 	f.StringVar(&cluster, "cluster", localcore.DefaultClusterName, "Local cluster to register the OCIRepository on.")

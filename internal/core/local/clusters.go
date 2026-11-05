@@ -18,7 +18,10 @@ const (
 	DefaultClusterName  = "local"
 	DefaultRegistryName = "kind-registry"
 	DefaultRegistryPort = 5001
-	DefaultArtifactName = "local"
+	// DefaultArtifactName is the platform artifact bootstrap publishes. It shares
+	// the Flux source's name (the source `platform` pulls oci://…/platform), so one
+	// name identifies the artifact, its OCIRepository, and what `push` reconciles.
+	DefaultArtifactName = fluxcore.DefaultSourceName
 	DefaultArtifactTag  = "latest"
 	// PlatformSource is the provenance stamped on the embedded platform artifact.
 	PlatformSource = "https://github.com/dantofa/platform"

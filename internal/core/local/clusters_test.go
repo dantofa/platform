@@ -104,14 +104,14 @@ func TestDeleteClusterIdempotent(t *testing.T) {
 
 func TestPushArtifactAssemblesAndReconciles(t *testing.T) {
 	f := &fakeLocalAPI{}
-	res, err := PushArtifact(context.Background(), f, "local", "latest", "flux/", 5001)
+	res, err := PushArtifact(context.Background(), f, DefaultArtifactName, "latest", "flux/", 5001)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.pushedURL != "oci://localhost:5001/local:latest" {
+	if f.pushedURL != "oci://localhost:5001/platform:latest" {
 		t.Errorf("wrong push url: %q", f.pushedURL)
 	}
-	if f.reconciled != "local" || res.Revision != "main@sha1:abc" {
+	if f.reconciled != DefaultArtifactName || res.Revision != "main@sha1:abc" {
 		t.Errorf("wrong result: reconciled=%q res=%+v", f.reconciled, res)
 	}
 }
@@ -128,11 +128,11 @@ func TestGetKubeconfigNotFound(t *testing.T) {
 func TestPushPlatformArtifactPublishesEmbeddedTree(t *testing.T) {
 	f := &fakeLocalAPI{}
 	tree := fstest.MapFS{"flux/cluster/a.yaml": {Data: []byte("kind: X\n")}}
-	res, err := PushPlatformArtifact(context.Background(), f, tree, "2026.11.01+gabc", "local", "latest", 5001)
+	res, err := PushPlatformArtifact(context.Background(), f, tree, "2026.11.01+gabc", DefaultArtifactName, "latest", 5001)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.pushedURL != "oci://localhost:5001/local:latest" {
+	if f.pushedURL != "oci://localhost:5001/platform:latest" {
 		t.Errorf("wrong push url: %q", f.pushedURL)
 	}
 	if f.pushedFile != "kind: X\n" {

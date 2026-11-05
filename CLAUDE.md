@@ -75,7 +75,7 @@ kustomization verify` gate rely on).
   `cluster` root `dependsOn` it so the backup target exists before Velero.
 
 **The kind source is embedded.** `platform.go` (repo root) `go:embed`s `flux/`, so
-`dctl local cluster bootstrap` / `push --name local` publish the tree of the rev the
+`dctl local cluster bootstrap` / `push --name platform` publish the tree of the rev the
 binary was built from — from any directory, a downstream repo included (never the
 cwd's `flux/`). `--platform-path` (bootstrap) / `--path` (push) override it with a
 checkout for uncommitted edits; `push --name <other>` still packages `.` (a
