@@ -142,6 +142,17 @@ type PushResult struct {
 	// OCIRepository names the Flux source registered for the artifact on the
 	// cluster; empty when none was (the platform artifact, or no cluster).
 	OCIRepository string `json:"oci_repository,omitempty"`
+	// SourceSkipped says why no OCIRepository was registered, so a script can tell
+	// a skip from a failure (and a typo'd --cluster from the platform artifact).
+	SourceSkipped string `json:"source_skipped,omitempty"`
+}
+
+// SkipPlatformArtifact is the SourceSkipped reason for the platform artifact.
+const SkipPlatformArtifact = "platform artifact (bootstrap registers it)"
+
+// SkipNoCluster is the SourceSkipped reason when the named cluster does not exist.
+func SkipNoCluster(cluster string) string {
+	return fmt.Sprintf("cluster %q not found", cluster)
 }
 
 func contains(items []string, target string) bool {
@@ -281,23 +292,24 @@ func GetKubeconfig(ctx context.Context, client LocalClusterAPI, name string) (st
 // `name` (create-or-update, idempotent), so a downstream needs no kubectl lookup of
 // the registry URL: the registry's in-cluster address and the source's shape are
 // this package's own knowledge (see InClusterArtifactURL). The source takes the
-// artifact's name. The platform artifact is skipped (returns "", nil): bootstrap
-// registers it under its own source name, and a second source for the same
-// artifact would only duplicate it.
-func RegisterSource(ctx context.Context, client LocalClusterAPI, eng fluxcore.Engine, registryName, name, tag string) (string, error) {
+// artifact's name. It returns the registered source's name, or, when it
+// deliberately registers nothing, the reason (skipped): the platform artifact is
+// registered by bootstrap under its own source name, and a second source for the
+// same artifact would only duplicate it.
+func RegisterSource(ctx context.Context, client LocalClusterAPI, eng fluxcore.Engine, registryName, name, tag string) (registered, skipped string, err error) {
 	if name == DefaultArtifactName {
-		return "", nil
+		return "", SkipPlatformArtifact, nil
 	}
 	url, err := InClusterArtifactURL(ctx, client, registryName, name)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	// Insecure: the in-cluster kind registry is plain HTTP.
 	res, err := fluxcore.AddSource(ctx, eng, nil, fluxcore.SourceSpec{
 		Type: fluxcore.SourceOCI, Name: name, URL: url, Revision: tag, Insecure: true,
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return res.Source, nil
+	return res.Source, "", nil
 }

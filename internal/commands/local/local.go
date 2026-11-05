@@ -367,7 +367,8 @@ func newLocalPushCmd() *cobra.Command {
 			"downstream artifact (any --name other than the platform's `platform`), also " +
 			"create or update the matching OCIRepository on the cluster, pointed at the " +
 			"in-cluster registry, so no registry URL needs deriving. The source is " +
-			"skipped when --cluster does not exist (the artifact is still published).",
+			"skipped, with a note on stderr and a source_skipped reason in the result, when " +
+			"--cluster does not exist (the artifact is still published).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -393,7 +394,12 @@ func newLocalPushCmd() *cobra.Command {
 			var notFound *localcore.LocalClusterNotFoundError
 			switch {
 			case errors.As(err, &notFound):
-				return render.JSON(result) // no cluster yet: published only
+				// Published only. Say so: a typo'd --cluster must not look like a
+				// push that registered a source.
+				result.SourceSkipped = localcore.SkipNoCluster(cluster)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+					"note: %s; artifact published, no OCIRepository registered\n", result.SourceSkipped)
+				return render.JSON(result)
 			case err != nil:
 				return render.Fail(err)
 			}
@@ -402,7 +408,7 @@ func newLocalPushCmd() *cobra.Command {
 				return render.Fail(err)
 			}
 			defer cleanup()
-			result.OCIRepository, err = localcore.RegisterSource(ctx, client,
+			result.OCIRepository, result.SourceSkipped, err = localcore.RegisterSource(ctx, client,
 				fluxclient.New(kubePath), registryName, name, tag)
 			if err != nil {
 				return render.Fail(err)

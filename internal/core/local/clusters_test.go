@@ -163,9 +163,9 @@ func (e *fakeEngine) DeleteKustomization(context.Context, string) error { return
 
 func TestRegisterSourcePointsAtTheInClusterRegistry(t *testing.T) {
 	f, e := &fakeLocalAPI{}, &fakeEngine{}
-	got, err := RegisterSource(context.Background(), f, e, DefaultRegistryName, "auth", "latest")
-	if err != nil || got != "auth" {
-		t.Fatalf("got %q err %v", got, err)
+	got, skipped, err := RegisterSource(context.Background(), f, e, DefaultRegistryName, "auth", "latest")
+	if err != nil || got != "auth" || skipped != "" {
+		t.Fatalf("got %q skipped %q err %v", got, skipped, err)
 	}
 	if len(e.created) != 1 {
 		t.Fatalf("want one source, got %d", len(e.created))
@@ -179,8 +179,14 @@ func TestRegisterSourcePointsAtTheInClusterRegistry(t *testing.T) {
 
 func TestRegisterSourceSkipsThePlatformArtifact(t *testing.T) {
 	f, e := &fakeLocalAPI{}, &fakeEngine{}
-	got, err := RegisterSource(context.Background(), f, e, DefaultRegistryName, DefaultArtifactName, "latest")
-	if err != nil || got != "" || len(e.created) != 0 {
-		t.Fatalf("platform artifact must not get a second source: %q %v %+v", got, err, e.created)
+	got, skipped, err := RegisterSource(context.Background(), f, e, DefaultRegistryName, DefaultArtifactName, "latest")
+	if err != nil || got != "" || skipped != SkipPlatformArtifact || len(e.created) != 0 {
+		t.Fatalf("platform artifact must not get a second source: %q %q %v %+v", got, skipped, err, e.created)
+	}
+}
+
+func TestSkipNoClusterNamesTheCluster(t *testing.T) {
+	if got := SkipNoCluster("typo"); got != `cluster "typo" not found` {
+		t.Errorf("got %q", got)
 	}
 }
