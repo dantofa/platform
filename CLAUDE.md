@@ -103,14 +103,14 @@ own bucket-scoped key and writes `db-backup-target` + `db-backup-credential` int
 `cnpg-provide-backup-destination` Kyverno policy generates an `ObjectStore` and an
 `ExternalSecret` into any namespace where a `Cluster` appears, and the **second
 `ClusterSecretStore` (`db-backup`, ESO's `kubernetes` provider over `cnpg-system`)**
-materializes the credential. Kyverno deliberately writes the *request* rather than
+materializes the credential. Kyverno deliberately writes the _request_ rather than
 cloning the Secret: a clone needs `list` on Secrets, which takes no `resourceNames`, so
 the smallest grant would be every Secret in every namespace — whereas ESO's reader needs
 only `get` on the one name. Keep consumers on an explicit `dataFrom.extract.key`; ESO's
 `find` lookup needs `list` and would undo that. Separate from Velero's by design: that key is
 ReadWrite on the cluster's disaster-recovery bucket, so a database able to reach it
 could delete the cluster's backups. The shapes differ too — Velero reads one
-credentials-*file* key, the barman plugin reads discrete `ACCESS_KEY_ID`/
+credentials-_file_ key, the barman plugin reads discrete `ACCESS_KEY_ID`/
 `ACCESS_SECRET_KEY` (its `ObjectStore` selects them with SecretKeySelectors), which is
 why `core.SecretShape` renders one credential two ways. On kind the same pair comes
 from `flux/local` against SeaweedFS, so the contract is identical on both cluster
@@ -206,6 +206,17 @@ Two rules keep it portable:
 suppressions every downstream inherits) with an optional local one — so downstream
 only tracks its own app-image CVEs.
 
+### The devbox plugin scaffolds into downstreams
+
+`devbox/plugin.json`'s `init_hook` runs `ensure-*.sh` scripts (packaged by
+`flake.nix`) in every consuming project. Two kinds of output: *generated* files
+(`.just/…`, the skill) are build output and gitignored; *scaffolds* (the `justfile`
+import, `renovate.json5`, `.github/workflows/devbox-update.yml`) are meant to be
+committed, so they are created only when absent and never edited. Adding a scaffold
+changes every downstream on its next `devbox` shell, so make it fail soft with a
+printed hint, and cover create / idempotent / existing-untouched in
+`devbox/smoke.sh`.
+
 ## Conventions & constraints
 
 - **Requires Go 1.26.**
@@ -228,7 +239,7 @@ only tracks its own app-image CVEs.
   (`local`, `preview`, `teardown`) run the shipped artifact via
   `nix run .#default`, injecting secrets with `bws`. API-only jobs (`drift`,
   `spaces`, `teardown`) use the minimal **`api` dev shell** (`nix develop .#api
-  --command bws …`, just `bws`) and cache it under their own `nix-api-` key:
+--command bws …`, just `bws`) and cache it under their own `nix-api-` key:
   `bws` is unfree, so it is never prebuilt on cache.nixos.org, and the first job
   to save a cache key wins, so a key shared by jobs with different closures can
   lock in a store without it. `nix.yml` builds the packaged artifact and asserts

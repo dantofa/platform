@@ -76,7 +76,9 @@ bump the pin. Nothing updates it for you; a stale pin is a stale platform.
   (verified: it re-pins the platform's packages to the current platform rev, and the
   other devbox packages with them). Commit the lock, nothing else (the generated files
   are build output). To get a weekly PR for it, call the platform's reusable workflow
-  from a scheduled workflow of your own:
+  from a scheduled workflow of your own. The devbox plugin scaffolds this caller into
+  `.github/workflows/devbox-update.yml` when the file is absent (commit it; it never
+  edits an existing one). By hand:
 
   ```yaml
   name: devbox-update
@@ -86,14 +88,17 @@ bump the pin. Nothing updates it for you; a stale pin is a stale platform.
   permissions: {}
   jobs:
     update:
-      permissions: { contents: write, pull-requests: write }
+      permissions: { contents: read }
       uses: dantofa/platform/.github/workflows/devbox-update.yml@<sha>
-      secrets: { token: "${{ secrets.ACTIONS_TOKEN }}" }
+      with: { bws_project_id: "${{ vars.BWS_PROJECT_ID }}" }
+      secrets: { bws_access_token: "${{ secrets.BWS_ACCESS_TOKEN }}" }
   ```
 
   It force-pushes one rolling `devbox-update` branch and opens (or refreshes) a single
-  PR, only when `devbox.lock` changed. Pass a PAT/App token as `token`: PRs made with the
-  default `GITHUB_TOKEN` don't trigger your checks, so your preview wouldn't gate the bump.
+  PR, only when `devbox.lock` changed. The push and PR use a PAT read from your bws
+  project (key `PLATFORM_UPDATE_TOKEN` by default), via the `BWS_ACCESS_TOKEN` you already
+  have for previews: PRs made with the default `GITHUB_TOKEN` don't trigger your checks,
+  so your preview wouldn't gate the bump.
 - **Nix flake** — `nix flake update platform` rewrites `flake.lock`. To get a weekly PR
   for it, extend the platform's Renovate preset. The devbox plugin scaffolds a
   `renovate.json5` with this when the project has no Renovate config (commit it); it
