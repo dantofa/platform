@@ -166,6 +166,15 @@
           text = builtins.readFile ./devbox/ensure-devbox-update.sh;
           executable = true;
         };
+        # The init_hook helper that scaffolds the caller of the reusable preview
+        # workflow (create-if-absent; never edits an existing file; disabled until the
+        # project opts in). Same shape and reasons as ensure-justfile above.
+        ensure-preview = (pkgsFor system).writeTextFile {
+          name = "ensure-preview";
+          destination = "/ensure-preview.sh";
+          text = builtins.readFile ./devbox/ensure-preview.sh;
+          executable = true;
+        };
         # The CLIs the cluster.just recipes shell out to (dctl comes from
         # `default`), pinned to the same nixpkgs as everything else — bundled for
         # downstream consumers via the devbox plugin so `just cluster …` runs

@@ -211,11 +211,13 @@ only tracks its own app-image CVEs.
 `devbox/plugin.json`'s `init_hook` runs `ensure-*.sh` scripts (packaged by
 `flake.nix`) in every consuming project. Two kinds of output: *generated* files
 (`.just/…`, the skill) are build output and gitignored; *scaffolds* (the `justfile`
-import, `renovate.json5`, `.github/workflows/devbox-update.yml`) are meant to be
-committed, so they are created only when absent and never edited. Adding a scaffold
+import, `renovate.json5`, `.github/workflows/devbox-update.yml` and `preview.yml`)
+are meant to be committed, so they are created only when absent and never edited. Adding a scaffold
 changes every downstream on its next `devbox` shell, so make it fail soft with a
 printed hint, and cover create / idempotent / existing-untouched in
-`devbox/smoke.sh`.
+`devbox/smoke.sh`. A scaffold that spends money (the `preview.yml` caller creates a
+billed cluster per PR) must also be **off until the project opts in** (a repository
+variable guard), never on by default.
 
 ## Conventions & constraints
 

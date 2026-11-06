@@ -9,7 +9,8 @@
     "github:dantofa/platform#skills",
     "github:dantofa/platform#ensure-justfile",
     "github:dantofa/platform#ensure-renovate",
-    "github:dantofa/platform#ensure-devbox-update"
+    "github:dantofa/platform#ensure-devbox-update",
+    "github:dantofa/platform#ensure-preview"
   ],
   "env": {
     "DCTL": "dctl",
@@ -26,6 +27,7 @@
       "bash \"$DEVBOX_PACKAGES_DIR/ensure-justfile.sh\"",
       "bash \"$DEVBOX_PACKAGES_DIR/ensure-renovate.sh\"",
       "bash \"$DEVBOX_PACKAGES_DIR/ensure-devbox-update.sh\"",
+      "bash \"$DEVBOX_PACKAGES_DIR/ensure-preview.sh\"",
       "mkdir -p .claude/skills/dantofa-platform",
       "install -m 0644 \"$DEVBOX_PACKAGES_DIR/SKILL.md\" .claude/skills/dantofa-platform/SKILL.md"
     ]

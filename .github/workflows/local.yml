@@ -3,9 +3,10 @@
 # flux/cluster + flux/local stack on kind and proves: Flux reconciliation,
 # the Cloudflare-Tunnel ingress e2e path (echo), Velero backup + restore, CNPG
 # point-in-time recovery, and the Trivy image-scan gate -- the role
-# `preview.yml` used to cover on a real, billed DOKS cluster (removed; see the
-# `reduce-doks-ci-cost` migration, prompted by DOKS compute cost far exceeding
-# runner cost). `update.yml`/`velero.yml` similarly moved their drills here;
+# the platform's own `preview.yml` used to cover on a real, billed DOKS cluster
+# (removed; see the `reduce-doks-ci-cost` migration, prompted by DOKS compute cost
+# far exceeding runner cost; today's `preview.yml` is the reusable workflow for
+# downstream projects, a different thing). `update.yml`/`velero.yml` similarly moved their drills here;
 # `cnpg.yml`'s `pitr` job is the one remaining real-DOKS job, kept specifically
 # to exercise a real Spaces bucket + bucket-scoped key.
 #
