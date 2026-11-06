@@ -1,0 +1,87 @@
+---
+# Scheduled image-security gate (issue #94). `local.yml` runs the same
+# `cluster verify image-scan` on PRs only, so a CVE published against an
+# unchanged image fails whichever unrelated PR runs next. Running it on master
+# on a schedule makes that failure its own alert (a failed scheduled run, like
+# `drift`) instead of a false red on someone's PR. No new scanning logic: it
+# reuses the gate and `.trivyignore-cluster`. Cost is one kind cluster on a
+# runner, no DOKS spend.
+name: scan
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily 06:00 UTC
+  workflow_dispatch: {}
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  NO_COLOR: "1"
+  KUBECONFIG: .kubeconfig
+  BASE_DOMAIN: local.dantofa.dev
+  CONTROL: "1"
+  WORKERS: "2"
+jobs:
+  scan:
+    runs-on: noble-32 # same sizing as local.yml: the full stack starves on the default runner
+    timeout-minutes: 60
+    environment: preview
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'go.sum', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      - name: Create local cluster
+        run: nix run .#default -- local cluster create --control-planes "$CONTROL" --workers "$WORKERS"
+
+      - name: Bootstrap the platform
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          BWS_PROJECT_ID: ${{ vars.BWS_PROJECT_ID }}
+          BWS_ORGANIZATION_ID: ${{ vars.BWS_ORGANIZATION_ID }}
+        run: >-
+          nix run .#default -- local cluster bootstrap --base-domain "$BASE_DOMAIN"
+          --metrics-remote
+          --bitwarden-token "$BWS_ACCESS_TOKEN"
+          --bitwarden-project-id "$BWS_PROJECT_ID" --bitwarden-org-id "$BWS_ORGANIZATION_ID"
+
+      - name: Verify Kustomizations reconciled
+        run: nix run .#default -- flux kustomization verify --wait --timeout 900s --kubeconfig .kubeconfig
+
+      # The gate reads trivy-operator reports, which need time after the stack
+      # is up; the image-scan recipe waits for them itself.
+      - name: Verify image scan (Trivy vulnerability gate)
+        run: nix develop --command just cluster verify image-scan
+
+      - name: Capture failure diagnostics
+        if: failure()
+        run: |
+          mkdir -p scan-diagnostics
+          nix develop --command just cluster debug > scan-diagnostics/cluster-debug.txt 2>&1 || true
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scan-diagnostics
+          path: scan-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Delete local cluster
+        if: always()
+        run: nix run .#default -- local cluster delete
