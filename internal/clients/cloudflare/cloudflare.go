@@ -1,5 +1,5 @@
 // Package cloudflare is a thin adapter over the Cloudflare API for the DNS
-// operations teardown needs: checking whether an ingress host still has a record
+// operations teardown needs, and for the per-cluster edge certificate: checking whether an ingress host still has a record
 // in a zone, and force-deleting the records for a host. It carries no
 // orchestration logic (that lives in core/teardown); the API token is read from
 // the in-cluster cloudflare-api secret by the caller.
@@ -12,10 +12,23 @@ import (
 
 	cf "github.com/cloudflare/cloudflare-go"
 
+	"github.com/dantofa/platform/internal/core/edgecert"
 	teardowncore "github.com/dantofa/platform/internal/core/teardown"
 )
 
-var _ teardowncore.CloudflareAPI = (*Client)(nil)
+var (
+	_ teardowncore.CloudflareAPI = (*Client)(nil)
+	_ edgecert.API               = (*Client)(nil)
+)
+
+// Advanced-certificate order parameters. Wildcard hosts can only be validated by
+// TXT record; Cloudflare adds the record itself because it hosts the zone's DNS.
+const (
+	certType         = "advanced"
+	certValidation   = "txt"
+	certValidityDays = 90
+	certAuthority    = "lets_encrypt"
+)
 
 // tunnelDeleteAttempts / tunnelDeleteBackoff bound the delete retry: a tunnel
 // cannot be deleted while it has active connections, and those take a moment to
@@ -139,4 +152,68 @@ func (c *Client) deleteTunnel(ctx context.Context, rc *cf.ResourceContainer, id 
 		}
 	}
 	return lastErr
+}
+
+func toPack(p cf.CertificatePack) edgecert.Pack {
+	return edgecert.Pack{ID: p.ID, Type: p.Type, Status: p.Status, Hosts: p.Hosts}
+}
+
+// ListCertificatePacks returns every certificate pack on the zone, in any
+// status. Implements edgecert.API.
+func (c *Client) ListCertificatePacks(ctx context.Context, zone string) ([]edgecert.Pack, error) {
+	rc, err := c.resolveZone(zone)
+	if err != nil {
+		return nil, err
+	}
+	packs, err := c.api.ListCertificatePacks(ctx, rc.Identifier)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]edgecert.Pack, len(packs))
+	for i := range packs {
+		out[i] = toPack(packs[i])
+	}
+	return out, nil
+}
+
+// OrderCertificatePack orders an Advanced certificate for hosts. Implements
+// edgecert.API.
+func (c *Client) OrderCertificatePack(ctx context.Context, zone string, hosts []string) (edgecert.Pack, error) {
+	rc, err := c.resolveZone(zone)
+	if err != nil {
+		return edgecert.Pack{}, err
+	}
+	p, err := c.api.CreateCertificatePack(ctx, rc.Identifier, cf.CertificatePackRequest{
+		Type:                 certType,
+		Hosts:                hosts,
+		ValidationMethod:     certValidation,
+		ValidityDays:         certValidityDays,
+		CertificateAuthority: certAuthority,
+	})
+	if err != nil {
+		return edgecert.Pack{}, err
+	}
+	return toPack(p), nil
+}
+
+// GetCertificatePack returns one pack by id. Implements edgecert.API.
+func (c *Client) GetCertificatePack(ctx context.Context, zone, id string) (edgecert.Pack, error) {
+	rc, err := c.resolveZone(zone)
+	if err != nil {
+		return edgecert.Pack{}, err
+	}
+	p, err := c.api.CertificatePack(ctx, rc.Identifier, id)
+	if err != nil {
+		return edgecert.Pack{}, err
+	}
+	return toPack(p), nil
+}
+
+// DeleteCertificatePack deletes one pack by id. Implements edgecert.API.
+func (c *Client) DeleteCertificatePack(ctx context.Context, zone, id string) error {
+	rc, err := c.resolveZone(zone)
+	if err != nil {
+		return err
+	}
+	return c.api.DeleteCertificatePack(ctx, rc.Identifier, id)
 }

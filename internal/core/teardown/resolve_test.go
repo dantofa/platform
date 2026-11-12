@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/dantofa/platform/internal/core/edgecert"
 	fluxcore "github.com/dantofa/platform/internal/core/flux"
 )
 
@@ -91,6 +93,30 @@ type fakeCF struct {
 	tunnelDeleted bool
 }
 
+// fakeCerts is the separate certificate-credential surface.
+type fakeCerts struct {
+	packs        []edgecert.Pack
+	deletedPacks []string
+	packErr      error
+}
+
+func (f *fakeCerts) ListCertificatePacks(context.Context, string) ([]edgecert.Pack, error) {
+	return f.packs, f.packErr
+}
+
+func (f *fakeCerts) OrderCertificatePack(context.Context, string, []string) (edgecert.Pack, error) {
+	return edgecert.Pack{}, nil
+}
+
+func (f *fakeCerts) GetCertificatePack(context.Context, string, string) (edgecert.Pack, error) {
+	return edgecert.Pack{}, nil
+}
+
+func (f *fakeCerts) DeleteCertificatePack(_ context.Context, _, id string) error {
+	f.deletedPacks = append(f.deletedPacks, id)
+	return nil
+}
+
 func (f *fakeCF) RecordedHosts(context.Context, string, []string) ([]string, error) {
 	return nil, nil
 }
@@ -141,7 +167,7 @@ func TestRunSkipsWhenIngressNotBootstrapped(t *testing.T) {
 	r := &fakeReader{configMaps: zoneCM()}
 	k := &fakeKube{hosts: []string{"a.dantofa.dev"}}
 	cf := &fakeCF{}
-	res, err := Run(context.Background(), r, k, func(string) (CloudflareAPI, error) { return cf, nil },
+	res, err := Run(context.Background(), r, k, func(string) (CloudflareAPI, error) { return cf, nil }, nil,
 		50*time.Millisecond, time.Millisecond)
 	if err != nil {
 		t.Fatalf("Run should skip, not error: %v", err)
@@ -166,7 +192,7 @@ func TestRunReapsTunnelWhenPresent(t *testing.T) {
 	}
 	k := &fakeKube{hosts: []string{"a.dantofa.dev"}, deleted: 1, stopped: 2}
 	cf := &fakeCF{}
-	res, err := Run(context.Background(), r, k, func(string) (CloudflareAPI, error) { return cf, nil },
+	res, err := Run(context.Background(), r, k, func(string) (CloudflareAPI, error) { return cf, nil }, nil,
 		50*time.Millisecond, time.Millisecond)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -190,7 +216,7 @@ func TestRunSkipsTunnelOnDOKS(t *testing.T) {
 	}
 	k := &fakeKube{hosts: []string{"a.dantofa.dev"}, deleted: 1}
 	cf := &fakeCF{}
-	_, err := Run(context.Background(), r, k, func(string) (CloudflareAPI, error) { return cf, nil },
+	_, err := Run(context.Background(), r, k, func(string) (CloudflareAPI, error) { return cf, nil }, nil,
 		50*time.Millisecond, time.Millisecond)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -200,5 +226,75 @@ func TestRunSkipsTunnelOnDOKS(t *testing.T) {
 	}
 	if cf.tunnelDeleted {
 		t.Error("no tunnel should be deleted on a cluster without a tunnel")
+	}
+}
+
+func edgeCertReader() *fakeReader {
+	return &fakeReader{
+		secrets: map[string]string{"external-dns/cloudflare-api/api_token": "tok"},
+		configMaps: map[string]string{
+			"flux-system/" + fluxcore.ClusterVarsName + "/" + fluxcore.VarDNSZone:    "dantofa.dev",
+			"flux-system/" + fluxcore.ClusterVarsName + "/" + fluxcore.VarBaseDomain: "auth-pr42.preview.dantofa.dev",
+		},
+	}
+}
+
+func TestRunDeletesOnlyTheClustersEdgeCert(t *testing.T) {
+	certs := &fakeCerts{packs: []edgecert.Pack{
+		{ID: "shared", Status: "active", Hosts: edgecert.Hosts("preview.dantofa.dev")},
+		{ID: "other-pr", Status: "active", Hosts: edgecert.Hosts("auth-pr43.preview.dantofa.dev")},
+		{ID: "mine", Status: "active", Hosts: edgecert.Hosts("auth-pr42.preview.dantofa.dev")},
+	}}
+	res, err := Run(context.Background(), edgeCertReader(), &fakeKube{}, func(string) (CloudflareAPI, error) { return &fakeCF{}, nil }, certs,
+		50*time.Millisecond, time.Millisecond)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(certs.deletedPacks) != 1 || certs.deletedPacks[0] != "mine" || res.EdgeCertsDeleted != 1 {
+		t.Errorf("deleted %v (result %+v), want only [mine]", certs.deletedPacks, res)
+	}
+}
+
+func TestRunEdgeCertFailureDoesNotBlockTheDelete(t *testing.T) {
+	certs := &fakeCerts{packErr: errors.New("403 forbidden")}
+	res, err := Run(context.Background(), edgeCertReader(), &fakeKube{}, func(string) (CloudflareAPI, error) { return &fakeCF{}, nil }, certs,
+		50*time.Millisecond, time.Millisecond)
+	if err != nil {
+		t.Fatalf("an edge-cert failure must not fail teardown (it would leave the cluster running): %v", err)
+	}
+	if !strings.Contains(res.EdgeCertError, "403") {
+		t.Errorf("the failure must still be reported, got %+v", res)
+	}
+}
+
+func TestRunSkipsEdgeCertAtTheApex(t *testing.T) {
+	r := edgeCertReader()
+	r.configMaps["flux-system/"+fluxcore.ClusterVarsName+"/"+fluxcore.VarBaseDomain] = "dantofa.dev"
+	certs := &fakeCerts{packErr: errors.New("must not be listed")}
+	res, err := Run(context.Background(), r, &fakeKube{}, func(string) (CloudflareAPI, error) { return &fakeCF{}, nil }, certs,
+		50*time.Millisecond, time.Millisecond)
+	if err != nil || res.EdgeCertError != "" {
+		t.Errorf("a covered base domain has no certificate to reap: %+v, %v", res, err)
+	}
+}
+
+func TestRunReapsEdgeCertEvenWhenTheDrainFails(t *testing.T) {
+	certs := &fakeCerts{packs: []edgecert.Pack{{ID: "mine", Status: "active", Hosts: edgecert.Hosts("auth-pr42.preview.dantofa.dev")}}}
+	k := &fakeKube{suspendErr: errors.New("api down"), hosts: []string{"a.dantofa.dev"}}
+	_, err := Run(context.Background(), edgeCertReader(), k, func(string) (CloudflareAPI, error) { return &fakeCF{}, nil }, certs,
+		50*time.Millisecond, time.Millisecond)
+	if err == nil {
+		t.Fatal("the drain failure must still surface")
+	}
+	if len(certs.deletedPacks) != 1 {
+		t.Error("the certificate must be reaped even when the drain fails, or --force leaks it")
+	}
+}
+
+func TestRunWithoutCertCredentialLeavesCertsAlone(t *testing.T) {
+	res, err := Run(context.Background(), edgeCertReader(), &fakeKube{}, func(string) (CloudflareAPI, error) { return &fakeCF{}, nil }, nil,
+		50*time.Millisecond, time.Millisecond)
+	if err != nil || res.EdgeCertsDeleted != 0 || res.EdgeCertError != "" {
+		t.Errorf("no certificate credential means no cleanup and no noise: %+v, %v", res, err)
 	}
 }
