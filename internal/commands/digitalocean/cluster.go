@@ -15,6 +15,7 @@ import (
 	fluxclient "github.com/dantofa/platform/internal/clients/flux"
 	"github.com/dantofa/platform/internal/clients/kube"
 	docore "github.com/dantofa/platform/internal/core/digitalocean"
+	"github.com/dantofa/platform/internal/core/edgecert"
 	fluxcore "github.com/dantofa/platform/internal/core/flux"
 	teardowncore "github.com/dantofa/platform/internal/core/teardown"
 	"github.com/dantofa/platform/internal/render"
@@ -25,6 +26,13 @@ import (
 const (
 	teardownTimeout  = 3 * time.Minute
 	teardownInterval = 5 * time.Second
+)
+
+// Edge-certificate issuance is Cloudflare-side and takes minutes; poll gently.
+const (
+	edgeCertTimeout  = 20 * time.Minute
+	edgeCertInterval = 10 * time.Second
+	cloudflareEnvVar = "CLOUDFLARE_CERT_TOKEN"
 )
 
 // newCFClient adapts the cloudflare client constructor to the teardown factory
@@ -243,7 +251,21 @@ func teardownCluster(ctx context.Context, cluster, token string, force bool) err
 		}
 		return teardownFailed(fmt.Errorf("connecting to cluster for teardown: %w", err), force)
 	}
-	res, err := teardowncore.Run(ctx, kc, kc, newCFClient, teardownTimeout, teardownInterval)
+	// The edge certificate uses its own credential, kept out of the cluster. Without
+	// it the delete still proceeds; the certificate (if this cluster has one) stays
+	// for `cluster audit --zone` to find.
+	var certs edgecert.API
+	if certToken := os.Getenv(cloudflareEnvVar); certToken != "" {
+		cfc, err := cfclient.New(certToken)
+		if err != nil {
+			return teardownFailed(err, force)
+		}
+		certs = cfc
+	} else {
+		fmt.Fprintf(os.Stderr, "warning: $%s is not set, so this cluster's Cloudflare edge certificate (if it has one) is not deleted; "+
+			"`cluster audit --zone <zone>` will report it\n", cloudflareEnvVar)
+	}
+	res, err := teardowncore.Run(ctx, kc, kc, newCFClient, certs, teardownTimeout, teardownInterval)
 	if err != nil {
 		return teardownFailed(err, force)
 	}
@@ -271,9 +293,12 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 		namespace, secretName, configMapName  string
 		tlsIssuer                             string
 		env                                   string
+		cloudflareToken                       string
 		metricsRemote                         bool
 		grafanaCloud                          bool
 		dolb                                  bool
+		edgeCert                              bool
+		edgeCertWait                          float64
 	)
 	cmd := &cobra.Command{
 		Use:   "bootstrap <cluster>",
@@ -291,6 +316,37 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 			}
 			if dbBucket == "" {
 				dbBucket = cluster + "-db-backup"
+			}
+			dnsZone, err := fluxcore.DNSZone(baseDomain)
+			if err != nil {
+				return render.Fail(err)
+			}
+
+			// Order the cluster's Cloudflare edge certificate first, without
+			// waiting: issuance takes minutes and runs while the rest is built, and
+			// this first call doubles as the token's permission probe, so a missing
+			// SSL permission or a full zone fails before anything else is created.
+			var (
+				certAPI  edgecert.API
+				certPack edgecert.Pack
+			)
+			if edgeCert && edgecert.Required(baseDomain, dnsZone) {
+				if cloudflareToken == "" {
+					cloudflareToken = os.Getenv(cloudflareEnvVar)
+				}
+				if cloudflareToken == "" {
+					return render.Fail(fmt.Errorf("base domain %q sits below the zone apex, so its dedicated hostnames "+
+						"need an edge certificate: set $%s (or --cloudflare-token), or pass --edge-cert=false",
+						baseDomain, cloudflareEnvVar))
+				}
+				cfc, err := cfclient.New(cloudflareToken)
+				if err != nil {
+					return render.Fail(err)
+				}
+				certAPI = cfc
+				if certPack, err = edgecert.Request(ctx, certAPI, dnsZone, baseDomain); err != nil {
+					return render.Fail(err)
+				}
 			}
 
 			// Fetch the cluster's kubeconfig via the DO token (to a temp file the
@@ -375,10 +431,6 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 					sourceURL = fluxcore.DefaultOCISourceURL
 				}
 			}
-			dnsZone, err := fluxcore.DNSZone(baseDomain)
-			if err != nil {
-				return render.Fail(err)
-			}
 			vars := map[string]string{
 				fluxcore.VarBaseDomain:         baseDomain,
 				fluxcore.VarClusterName:        cluster,
@@ -446,7 +498,10 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 				return render.Fail(err)
 			}
 
-			return render.JSON(map[string]any{
+			// Hold the deploy/verify steps that follow until the certificate is
+			// live, so a certificate problem fails here as a platform failure
+			// rather than as a downstream TLS timeout.
+			out := map[string]any{
 				"cluster":        cluster,
 				"bucket":         bucket,
 				"db_bucket":      dbBucket,
@@ -454,7 +509,15 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 				"source_kind":    res.SourceKind,
 				"revision":       res.Revision,
 				"kustomizations": res.Kustomizations,
-			})
+			}
+			if certAPI != nil {
+				if certPack, err = edgecert.Wait(ctx, certAPI, dnsZone, certPack,
+					time.Duration(edgeCertWait*float64(time.Second)), edgeCertInterval); err != nil {
+					return render.Fail(err)
+				}
+				out["edge_cert"] = certPack
+			}
+			return render.JSON(out)
 		},
 	}
 	f := cmd.Flags()
@@ -484,6 +547,14 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 		"Deploy a secondary in-cluster Prometheus receiver and forward metrics to it (a remote/Grafana-Cloud stand-in for measuring active series + DPM).")
 	f.BoolVar(&grafanaCloud, "grafana-cloud", false,
 		"Forward a curated metrics subset to Grafana Cloud (needs the GRAFANA_CLOUD_ACCESS_{URL,USER,TOKEN} bws secrets). The real remote; not for preview.")
+	f.BoolVar(&edgeCert, "edge-cert", true,
+		"Order a Cloudflare edge certificate for *.<base-domain> when the base domain is below the zone apex "+
+			"(so dedicated hostnames <app>.<base-domain> get TLS). Needs a token with SSL and Certificates edit "+
+			"permission. Skipped when the base domain is the apex.")
+	f.Float64Var(&edgeCertWait, "edge-cert-timeout", edgeCertTimeout.Seconds(),
+		"Seconds to wait for the edge certificate to become active.")
+	f.StringVar(&cloudflareToken, "cloudflare-token", "",
+		"Cloudflare token with SSL and Certificates edit permission, for the edge certificate (default $"+cloudflareEnvVar+").")
 	f.StringVar(&env, "env", "prod",
 		"Deployment environment label (${env}) applied to metrics sent to a shared remote stack, alongside the cluster name.")
 	f.StringVar(&bwToken, "bitwarden-token", "", "Bitwarden machine-account token for the ESO secret-zero (default $BWS_ACCESS_TOKEN).")
@@ -496,6 +567,10 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 }
 
 func newClusterAuditCmd(token *string) *cobra.Command {
+	var (
+		zones           []string
+		cloudflareToken string
+	)
 	cmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Audit the account for Volumes/Snapshots/LoadBalancers orphaned from every live cluster.",
@@ -503,8 +578,10 @@ func newClusterAuditCmd(token *string) *cobra.Command {
 			"report whichever belong to no currently-live cluster. `cluster delete` " +
 			"already reaps a cluster's own associated resources on teardown, so this " +
 			"catches what that doesn't cover: a process killed between create and a " +
-			"later delete, or a resource created outside dctl entirely. Exits non-zero " +
-			"when drift is found, so a scheduled job can gate on it.",
+			"later delete, or a resource created outside dctl entirely. With --zone it " +
+			"also reports per-cluster Cloudflare edge certificates whose cluster is gone " +
+			"(a failed, --force or --no-teardown delete). Exits non-zero when drift is " +
+			"found, so a scheduled job can gate on it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := doclient.NewClusterClient(*token)
@@ -514,6 +591,26 @@ func newClusterAuditCmd(token *string) *cobra.Command {
 			report, ok, err := docore.AuditDrift(cmd.Context(), client)
 			if err != nil {
 				return render.Fail(err)
+			}
+			if len(zones) > 0 {
+				if cloudflareToken == "" {
+					cloudflareToken = os.Getenv(cloudflareEnvVar)
+				}
+				if cloudflareToken == "" {
+					return render.Fail(fmt.Errorf("--zone needs a Cloudflare token: set $%s or --cloudflare-token", cloudflareEnvVar))
+				}
+				cfc, err := cfclient.New(cloudflareToken)
+				if err != nil {
+					return render.Fail(err)
+				}
+				live, err := docore.ListClusters(cmd.Context(), client)
+				if err != nil {
+					return render.Fail(err)
+				}
+				if report.OrphanedEdgeCerts, err = docore.AuditEdgeCerts(cmd.Context(), cfc, zones, live); err != nil {
+					return render.Fail(err)
+				}
+				ok = report.Empty()
 			}
 			if err := render.JSON(report); err != nil {
 				return err
@@ -526,5 +623,9 @@ func newClusterAuditCmd(token *string) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringArrayVar(&zones, "zone", nil,
+		"A Cloudflare zone to audit for orphaned per-cluster edge certificates; repeatable.")
+	cmd.Flags().StringVar(&cloudflareToken, "cloudflare-token", "",
+		"Cloudflare API token for --zone (default $"+cloudflareEnvVar+").")
 	return cmd
 }

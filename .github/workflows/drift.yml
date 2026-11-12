@@ -41,14 +41,15 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      # bws injects only the DigitalOcean token (DIGITALOCEAN_ACCESS_TOKEN) from
-      # the shared secrets project. The report (ids, names, sizes, regions) lands
+      # bws injects the DigitalOcean token (DIGITALOCEAN_ACCESS_TOKEN) and the
+      # certificate token (CLOUDFLARE_CERT_TOKEN, for the --zone edge-certificate
+      # check) from the shared secrets project. The report (ids, names, sizes, regions) lands
       # in this step's log; the command exits non-zero whenever it is non-empty,
       # failing this job so a scheduled-run notification is the alert.
-      - name: Audit for orphaned Volumes/Snapshots/LoadBalancers
+      - name: Audit for orphaned Volumes/Snapshots/LoadBalancers/Edge Certificates
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
           nix develop .#api --command
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
-          nix run .#default -- digitalocean cluster audit
+          nix run .#default -- digitalocean cluster audit --zone dantofa.dev

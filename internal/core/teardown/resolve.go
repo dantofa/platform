@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dantofa/platform/internal/core/edgecert"
 	fluxcore "github.com/dantofa/platform/internal/core/flux"
 	"github.com/dantofa/platform/internal/core/retry"
 )
@@ -158,11 +159,13 @@ func ResolveTunnel(ctx context.Context, r ClusterReader) (TunnelRef, bool, error
 
 // Run is the full teardown entrypoint a delete command calls: it resolves the
 // Cloudflare token and zone from the cluster, builds the Cloudflare client via
-// newCF, drains the ingress DNS records, and — on a cluster with a Cloudflare
+// newCF, drains the ingress DNS records, deletes the cluster's edge certificate
+// through certs (nil when the caller has no certificate credential or the cluster
+// type has no edge: nothing is deleted and nothing is reported), and — on a cluster with a Cloudflare
 // Tunnel — stops the tunnel controller and deletes the leftover tunnel object.
 // Keeping this in core lets the DOKS and local delete commands stay thin and
 // share the exact same flow (the tunnel steps are simply no-ops on DOKS).
-func Run(ctx context.Context, r ClusterReader, k KubeAPI, newCF func(token string) (CloudflareAPI, error), timeout, interval time.Duration) (Result, error) {
+func Run(ctx context.Context, r ClusterReader, k KubeAPI, newCF func(token string) (CloudflareAPI, error), certs edgecert.API, timeout, interval time.Duration) (Result, error) {
 	r = WithRetry(r, readTimeout, readDelay)
 	token, err := ResolveCloudflareToken(ctx, r)
 	if err != nil {
@@ -184,6 +187,9 @@ func Run(ctx context.Context, r ClusterReader, k KubeAPI, newCF func(token strin
 	}
 
 	res, err := Teardown(ctx, k, cfapi, Options{Zone: zone, Timeout: timeout, Interval: interval})
+	// Reap the cluster's edge certificate whether or not the drain succeeded: a
+	// --force delete that skipped it would leak the certificate for good.
+	res.EdgeCertsDeleted, res.EdgeCertError = reapEdgeCert(ctx, r, certs, zone)
 	if err != nil {
 		return res, err
 	}
@@ -205,4 +211,29 @@ func Run(ctx context.Context, r ClusterReader, k KubeAPI, newCF func(token strin
 		return res, fmt.Errorf("deleting cloudflare tunnel %q: %w", tunnel.Name, err)
 	}
 	return res, nil
+}
+
+// reapEdgeCert deletes the cluster's edge certificate, if it had one. It reports
+// failure as a string rather than an error so a permission or API problem here
+// never blocks destroying the cluster (see Result.EdgeCertError).
+func reapEdgeCert(ctx context.Context, r ClusterReader, api edgecert.API, zone string) (int, string) {
+	if api == nil {
+		return 0, ""
+	}
+	base, err := r.ConfigMapValue(ctx, clusterVarsNamespace, fluxcore.ClusterVarsName, fluxcore.VarBaseDomain)
+	if err != nil {
+		return 0, fmt.Sprintf("reading %s: %v", fluxcore.VarBaseDomain, err)
+	}
+	if base == "" || !edgecert.Required(base, zone) {
+		return 0, ""
+	}
+	n := 0
+	err = retry.Do(ctx, readTimeout, readDelay, func() (err error) {
+		n, err = edgecert.Delete(ctx, api, zone, base)
+		return err
+	})
+	if err != nil {
+		return n, err.Error()
+	}
+	return n, ""
 }

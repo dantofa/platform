@@ -45,7 +45,9 @@ type DNSAPI interface {
 
 // CloudflareAPI is the full Cloudflare surface: DNS record ops plus account-level
 // tunnel deletion (local clusters whose tunnel controller leaves its Cloudflare
-// Tunnel behind on teardown). Satisfied by clients/cloudflare.
+// Tunnel behind on teardown). Satisfied by clients/cloudflare. The edge
+// certificate is deliberately not part of it: that takes a separate, narrower
+// credential that never enters the cluster (see Run's certs parameter).
 type CloudflareAPI interface {
 	DNSAPI
 	// DeleteTunnelByName deletes the tunnel(s) named name in the account, returning
@@ -69,6 +71,12 @@ type Result struct {
 	Drained                 bool     `json:"drained"`
 	StoppedTunnelWorkloads  int      `json:"stopped_tunnel_workloads,omitempty"`
 	TunnelDeleted           bool     `json:"tunnel_deleted,omitempty"`
+	// EdgeCertsDeleted counts the cluster's Cloudflare edge certificates removed.
+	// EdgeCertError is set when that cleanup failed: it never aborts the delete
+	// (a leaked certificate costs far less than a leaked cluster, and `cluster
+	// audit` reports it), but it must not pass silently.
+	EdgeCertsDeleted int    `json:"edge_certs_deleted,omitempty"`
+	EdgeCertError    string `json:"edge_cert_error,omitempty"`
 	// Skipped is set when the cluster has no ingress stack (no cloudflare-api
 	// secret), so there was nothing to tear down.
 	Skipped bool `json:"skipped,omitempty"`

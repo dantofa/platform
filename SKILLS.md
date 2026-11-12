@@ -125,11 +125,57 @@ kind cluster is separate and unchanged: `dctl local cluster push --name <yours>`
 
 - Every cluster has a `base_domain` (Flux cluster-var `${base_domain}`) — e.g.
   `local.dantofa.dev`, `preview.dantofa.dev`, `dantofa.dev`.
-- **Route apps by PATH on `${base_domain}`, not per-app subdomains**: serve your app at
-  `${base_domain}/<app>` (like echo at `/echo`, Grafana at `/grafana`). A per-app
-  subdomain (`app.local.dantofa.dev`) sits two levels under the zone apex, outside
-  Cloudflare Universal SSL (`*.dantofa.dev`); the apex + one level is covered.
-- Never hardcode a hostname — use `${base_domain}` + a path.
+- **Prefer routing by PATH on `${base_domain}`**: serve your app at
+  `${base_domain}/<app>` (like echo at `/echo`, Grafana at `/grafana`). This needs no
+  extra certificate anywhere: the apex + one level is covered by Cloudflare Universal
+  SSL (`*.dantofa.dev`).
+- **Dedicated hostnames are the exception, for apps that cannot live under a path**
+  (e.g. Zitadel). Publish them as `<app>.${base_domain}`. Behind the Cloudflare Tunnel
+  (the DOKS default) a nested name such as `auth.auth-pr42.preview.dantofa.dev` sits
+  below Universal SSL's one wildcard level, so TLS would fail at the edge. `dctl
+  digitalocean cluster bootstrap` therefore **orders a Cloudflare Advanced Certificate
+  for `*.<base_domain>` and `<base_domain>`** whenever the base domain is below the zone
+  apex (every preview), and `cluster delete` removes it. Nothing to do in your manifests.
+  A base domain equal to the zone apex (production on `dantofa.com`) is already covered
+  and orders nothing; `--edge-cert=false` opts a cluster out. Local (kind) clusters have
+  no Cloudflare edge, so nothing extra is needed there.
+- **The edge certificate, in detail.**
+  - *Ordered early, awaited late.* Bootstrap orders the certificate first (issuance takes
+    minutes) and waits for it to be `active` as its last step
+    (`--edge-cert-timeout`, default 20m), so the preview's `deploy`/`verify` never start
+    against a missing certificate. The first run per PR is slower; re-runs reuse it.
+  - *Ownership is the exact host list.* A cluster's certificate is the pack whose hosts
+    are exactly `{*.<base_domain>, <base_domain>}`. The shared `*.preview.…` wildcard
+    and other PRs' certificates never match, so teardown cannot delete them.
+  - *Its own token.* Certificates use a separate Cloudflare token, `CLOUDFLARE_CERT_TOKEN`
+    in bws, read from the environment by bootstrap, `cluster delete` and the audit. It
+    needs **Zone → SSL and Certificates → Edit** and **Zone → Zone → Read**, scoped to
+    the preview zone(s) only, and it is deliberately **never synced into the cluster**
+    (unlike `CLOUDFLARE_API_TOKEN`, which ESO hands to external-dns and the tunnel), so
+    a workload that can read cluster Secrets cannot order or delete certificates.
+    Bootstrap probes it before building anything and fails naming the permission. The
+    zone must have Advanced Certificate Manager enabled.
+  - *Teardown never blocks on it.* If deleting the certificate fails, or
+    `CLOUDFLARE_CERT_TOKEN` is not set (an interactive delete without `bws run`, which
+    warns), `cluster delete` still destroys the cluster (a leaked certificate costs far
+    less than a leaked cluster) and prints `edge_cert_error`; the audit below finds the
+    leftover.
+  - *Audit.* `cluster doks audit --zone <zone>` (repeatable) also reports per-cluster
+    certificates whose cluster no longer exists, and exits non-zero. A certificate counts
+    as a cluster's own when its hosts are `{*.<cluster>.<suffix>, <cluster>.<suffix>}`
+    with the suffix at least one label below the zone apex; certificates one level below
+    the apex (the shared `*.preview.…`) are never reported. The scheduled drift job
+    passes `--zone dantofa.dev`.
+- **Edge certificates are a shared, finite resource.** The zone is assumed to allow 100
+  edge certificates (the Enterprise figure; unconfirmed for this plan), shared by every
+  repo's concurrent previews, the standing certs and any leaks. Bootstrap refuses to
+  order at 80 or more (`edgecert.OrderCeiling`) and says to run the audit; an existing
+  certificate is still reused at the ceiling. Previews belong on their own zone
+  (planned: `dantofa.com` production, `dantofa.dev` previews, `dantofa.xyz` local) so
+  their certificates cannot use production's quota and the certificate-capable token can
+  be scoped to the preview zone. A separate zone does not remove the need for the
+  certificate: nesting depth is the problem on any zone.
+- Never hardcode a hostname — use `${base_domain}` + a path, or `<app>.${base_domain}`.
 
 ## Ingress definitions
 
