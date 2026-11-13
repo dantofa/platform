@@ -59,6 +59,7 @@ func newClusterCmd() *cobra.Command {
 		newClusterDeleteCmd(&token),
 		newClusterBootstrapCmd(&token),
 		newClusterAuditCmd(&token),
+		newEdgeCertCmd(),
 	)
 	return cluster
 }
@@ -331,17 +332,10 @@ func newClusterBootstrapCmd(token *string) *cobra.Command {
 				certPack edgecert.Pack
 			)
 			if edgeCert && edgecert.Required(baseDomain, dnsZone) {
-				if cloudflareToken == "" {
-					cloudflareToken = os.Getenv(cloudflareEnvVar)
-				}
-				if cloudflareToken == "" {
-					return render.Fail(fmt.Errorf("base domain %q sits below the zone apex, so its dedicated hostnames "+
-						"need an edge certificate: set $%s (or --cloudflare-token), or pass --edge-cert=false",
-						baseDomain, cloudflareEnvVar))
-				}
-				cfc, err := cfclient.New(cloudflareToken)
+				cfc, err := certClient(cloudflareToken)
 				if err != nil {
-					return render.Fail(err)
+					return render.Fail(fmt.Errorf("base domain %q sits below the zone apex, so its dedicated hostnames "+
+						"need an edge certificate (or pass --edge-cert=false): %w", baseDomain, err))
 				}
 				certAPI = cfc
 				if certPack, err = edgecert.Request(ctx, certAPI, dnsZone, baseDomain); err != nil {
@@ -593,15 +587,9 @@ func newClusterAuditCmd(token *string) *cobra.Command {
 				return render.Fail(err)
 			}
 			if len(zones) > 0 {
-				if cloudflareToken == "" {
-					cloudflareToken = os.Getenv(cloudflareEnvVar)
-				}
-				if cloudflareToken == "" {
-					return render.Fail(fmt.Errorf("--zone needs a Cloudflare token: set $%s or --cloudflare-token", cloudflareEnvVar))
-				}
-				cfc, err := cfclient.New(cloudflareToken)
+				cfc, err := certClient(cloudflareToken)
 				if err != nil {
-					return render.Fail(err)
+					return render.Fail(fmt.Errorf("--zone needs a Cloudflare certificate token: %w", err))
 				}
 				live, err := docore.ListClusters(cmd.Context(), client)
 				if err != nil {
