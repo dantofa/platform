@@ -3,6 +3,8 @@ package digitalocean
 import (
 	"context"
 	"testing"
+
+	"github.com/dantofa/platform/internal/core/edgecert"
 )
 
 // fakeDriftAPI extends fakeClusterAPI (clusters_test.go) with the account-wide
@@ -81,5 +83,38 @@ func TestAuditDriftNoLiveClustersEverythingOrphaned(t *testing.T) {
 	}
 	if ok || len(report.OrphanedVolumes) != 1 {
 		t.Fatalf("expected the one volume orphaned with no live clusters, got %+v", report)
+	}
+}
+
+type fakeCerts struct{ packs map[string][]edgecert.Pack }
+
+func (f fakeCerts) ListCertificatePacks(_ context.Context, zone string) ([]edgecert.Pack, error) {
+	return f.packs[zone], nil
+}
+
+func (fakeCerts) OrderCertificatePack(context.Context, string, []string) (edgecert.Pack, error) {
+	return edgecert.Pack{}, nil
+}
+
+func (fakeCerts) GetCertificatePack(context.Context, string, string) (edgecert.Pack, error) {
+	return edgecert.Pack{}, nil
+}
+func (fakeCerts) DeleteCertificatePack(context.Context, string, string) error { return nil }
+
+func TestAuditEdgeCertsReportsOnlyDeadClustersCerts(t *testing.T) {
+	api := fakeCerts{packs: map[string][]edgecert.Pack{"dantofa.dev": {
+		{ID: "shared", Status: "active", Hosts: edgecert.Hosts("preview.dantofa.dev")},
+		{ID: "live", Status: "active", Hosts: edgecert.Hosts("auth-pr1.preview.dantofa.dev")},
+		{ID: "dead", Status: "active", Hosts: edgecert.Hosts("auth-pr2.preview.dantofa.dev")},
+	}}}
+	got, err := AuditEdgeCerts(context.Background(), api, []string{"dantofa.dev"}, []Cluster{{Name: "auth-pr1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "dead" || got[0].Zone != "dantofa.dev" {
+		t.Errorf("got %+v, want only the dead cluster's certificate", got)
+	}
+	if (DriftReport{OrphanedEdgeCerts: got}).Empty() {
+		t.Error("an orphaned certificate must make the report non-empty so the audit exits non-zero")
 	}
 }

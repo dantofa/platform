@@ -473,7 +473,7 @@ func teardownCluster(ctx context.Context, name string, force bool) error {
 	if err != nil {
 		return teardownFailed(fmt.Errorf("connecting to cluster for teardown: %w", err), force)
 	}
-	res, err := teardowncore.Run(ctx, kc, kc, newCFClient, teardownTimeout, teardownInterval)
+	res, err := teardowncore.Run(ctx, kc, kc, newCFClient, nil, teardownTimeout, teardownInterval)
 	if err != nil {
 		return teardownFailed(err, force)
 	}

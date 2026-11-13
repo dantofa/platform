@@ -1,6 +1,11 @@
 package digitalocean
 
-import "context"
+import (
+	"context"
+	"fmt"
+
+	"github.com/dantofa/platform/internal/core/edgecert"
+)
 
 // Volume is a DigitalOcean block-storage volume as surfaced to the user.
 type Volume struct {
@@ -43,19 +48,29 @@ type DriftAPI interface {
 	ListLoadBalancers(ctx context.Context) ([]LoadBalancer, error)
 }
 
-// DriftReport is the account-wide Volumes/VolumeSnapshots/LoadBalancers that
-// belong to no currently-live cluster.
+// OrphanedEdgeCert is a per-cluster Cloudflare edge certificate whose cluster no
+// longer exists, with the zone it sits in.
+type OrphanedEdgeCert struct {
+	Zone string `json:"zone"`
+	edgecert.Pack
+}
+
+// DriftReport is the account-wide Volumes/VolumeSnapshots/LoadBalancers (and,
+// when audited, Cloudflare edge certificates) that belong to no currently-live
+// cluster.
 type DriftReport struct {
-	OrphanedVolumes         []Volume         `json:"orphaned_volumes"`
-	OrphanedVolumeSnapshots []VolumeSnapshot `json:"orphaned_volume_snapshots"`
-	OrphanedLoadBalancers   []LoadBalancer   `json:"orphaned_load_balancers"`
+	OrphanedVolumes         []Volume           `json:"orphaned_volumes"`
+	OrphanedVolumeSnapshots []VolumeSnapshot   `json:"orphaned_volume_snapshots"`
+	OrphanedLoadBalancers   []LoadBalancer     `json:"orphaned_load_balancers"`
+	OrphanedEdgeCerts       []OrphanedEdgeCert `json:"orphaned_edge_certs,omitempty"`
 }
 
 // Empty reports whether the audit found no drift.
 func (r DriftReport) Empty() bool {
 	return len(r.OrphanedVolumes) == 0 &&
 		len(r.OrphanedVolumeSnapshots) == 0 &&
-		len(r.OrphanedLoadBalancers) == 0
+		len(r.OrphanedLoadBalancers) == 0 &&
+		len(r.OrphanedEdgeCerts) == 0
 }
 
 // AuditDrift audits the account for Volumes, VolumeSnapshots, and
@@ -123,4 +138,26 @@ func markExpected(set map[string]bool, ids []string) {
 	for _, id := range ids {
 		set[id] = true
 	}
+}
+
+// AuditEdgeCerts reports the per-cluster edge certificates in zones whose cluster
+// is not among the live ones (left behind by a failed, --force or --no-teardown
+// delete). A zone's shared certificates are never reported; see
+// edgecert.Orphans for how a cluster's own are told apart.
+func AuditEdgeCerts(ctx context.Context, api edgecert.API, zones []string, live []Cluster) ([]OrphanedEdgeCert, error) {
+	names := make([]string, len(live))
+	for i, c := range live {
+		names[i] = c.Name
+	}
+	var out []OrphanedEdgeCert
+	for _, zone := range zones {
+		packs, err := api.ListCertificatePacks(ctx, zone)
+		if err != nil {
+			return nil, fmt.Errorf("listing edge certificates in %s: %w", zone, err)
+		}
+		for _, p := range edgecert.Orphans(packs, zone, names) {
+			out = append(out, OrphanedEdgeCert{Zone: zone, Pack: p})
+		}
+	}
+	return out, nil
 }
