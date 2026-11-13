@@ -155,6 +155,17 @@ kind cluster is separate and unchanged: `dctl local cluster push --name <yours>`
     a workload that can read cluster Secrets cannot order or delete certificates.
     Bootstrap probes it before building anything and fails naming the permission. The
     zone must have Advanced Certificate Manager enabled.
+  - *Verified three ways.* (1) `cluster verify health` also asserts the certificate is
+    **active** when `DOKS_BASE_DOMAIN` is set (a DOKS/preview flow; set
+    `DOKS_EDGE_CERT=false` for a cluster bootstrapped with `--edge-cert=false`), so a
+    certificate problem fails as a platform failure instead of a downstream TLS timeout.
+    It checks Cloudflare's record of the certificate, not a TLS handshake. (2) The
+    `edge-cert` workflow drills the whole lifecycle against the real API with no cluster
+    (order, wait for `active`, verify, re-order is idempotent, delete, verify now fails)
+    on PRs touching this code and weekly, so a revoked permission or a changed API
+    surfaces before a real preview. (3) `cluster doks audit --zone` catches leaks.
+    `just cluster doks edge-cert request|verify|delete --base-domain <d>` runs the same
+    primitives by hand.
   - *Teardown never blocks on it.* If deleting the certificate fails, or
     `CLOUDFLARE_CERT_TOKEN` is not set (an interactive delete without `bws run`, which
     warns), `cluster delete` still destroys the cluster (a leaked certificate costs far

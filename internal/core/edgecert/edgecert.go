@@ -179,6 +179,28 @@ func Wait(ctx context.Context, api API, zone string, p Pack, timeout, interval t
 	}
 }
 
+// Verify asserts that the edge currently holds an active certificate for
+// baseDomain's hosts. It is the readiness gate behind `cluster verify health`: a
+// certificate that was never ordered, was deleted, or has fallen out of active
+// (a failed renewal, say) fails here as a platform problem instead of surfacing
+// later as a downstream TLS timeout. It checks Cloudflare's record of the pack,
+// not a TLS handshake.
+func Verify(ctx context.Context, api API, zone, baseDomain string) (Pack, error) {
+	packs, err := api.ListCertificatePacks(ctx, zone)
+	if err != nil {
+		return Pack{}, fmt.Errorf("listing edge certificates (the Cloudflare token needs SSL and Certificates read permission): %w", err)
+	}
+	p, ok := Find(packs, baseDomain)
+	if !ok {
+		return Pack{}, fmt.Errorf("no edge certificate for %v in zone %s: dedicated hostnames under %s will fail TLS at the edge",
+			Hosts(baseDomain), zone, baseDomain)
+	}
+	if p.Status != StatusActive {
+		return p, fmt.Errorf("edge certificate %s for %v is %q, not active", p.ID, p.Hosts, p.Status)
+	}
+	return p, nil
+}
+
 // Delete removes every certificate that exactly matches baseDomain's hosts and
 // returns how many it deleted. Idempotent: none left is a success.
 func Delete(ctx context.Context, api API, zone, baseDomain string) (int, error) {
