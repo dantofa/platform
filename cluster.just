@@ -6,6 +6,7 @@
 #   just cluster local  create|verify|delete|test   # kind cluster lifecycle
 #   just cluster local  ca                          # export the local TLS trust anchor
 #   just cluster doks   create|bootstrap|connect|delete|list  # DOKS cluster lifecycle
+#   just cluster doks   edge-cert request|verify|delete --base-domain D   # edge certificate
 #   just cluster doks   audit [--zone Z]                # audit for orphaned Volumes/Snapshots/LBs/edge certs
 #
 # Distributed via the platform Nix flake (`packages.cluster-just`): the platform
@@ -19,7 +20,11 @@
 #   DCTL              how to invoke dctl (default: `nix run github:dantofa/platform#default --`)
 #   BASE_DOMAIN       ingress FQDN for `cluster local` (default: local.dantofa.dev)
 #   DOKS_CLUSTER      cluster name the `cluster doks` recipes act on (default: doks)
-#   DOKS_BASE_DOMAIN  ingress FQDN for `cluster doks bootstrap` (default: doks.dantofa.dev)
+#   DOKS_BASE_DOMAIN  ingress FQDN for `cluster doks bootstrap` (default: doks.dantofa.dev);
+#                     when set, `cluster verify health` also asserts the base domain's
+#                     Cloudflare edge certificate is active (needs CLOUDFLARE_CERT_TOKEN)
+#   DOKS_EDGE_CERT    set to `false` to skip that assertion, for a cluster bootstrapped
+#                     with --edge-cert=false
 #   KUBECONFIG        kubeconfig path (default: ./.kubeconfig)
 #   LOCAL_CA_FILE     where `cluster local ca` writes the trust anchor (default: ./.local.pem)
 #   TRIVYIGNORE_BASE  mandatory accepted-CVE file (default: ./.trivyignore-cluster)
@@ -50,7 +55,11 @@ cluster-doks action *args:
 # cluster verification that is NOT cluster-type-specific -- `cluster local verify`
 # composes it after connecting to kind, and a DOKS/preview flow composes it after
 # `cluster doks connect`, so both gate on exactly the same conditions. Acts on
-# whatever ${KUBECONFIG:-.kubeconfig} points at.
+# whatever ${KUBECONFIG:-.kubeconfig} points at. When ${DOKS_BASE_DOMAIN} is set (a
+# DOKS/preview flow; kind has no Cloudflare edge) it also asserts the base domain's
+# edge certificate is active, so a certificate problem fails here as a platform
+# failure instead of as a downstream TLS timeout; DOKS_EDGE_CERT=false skips that
+# for a cluster bootstrapped with --edge-cert=false.
 cluster-verify-health:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -61,6 +70,9 @@ cluster-verify-health:
   # Generous default: a cold cluster pulls every image before a root reports Ready.
   "${dctl[@]}" flux kustomization verify --wait --timeout "${FLUX_TIMEOUT:-600s}" \
     --kubeconfig "$KUBECONFIG"
+  if [[ -n "${DOKS_BASE_DOMAIN:-}" && "${DOKS_EDGE_CERT:-true}" != "false" ]]; then
+    "${dctl[@]}" digitalocean cluster edge-cert verify --base-domain "$DOKS_BASE_DOMAIN"
+  fi
 
 # Integration check (CI): assert Flux installed Velero and a backup completes.
 # Targets the cluster in $KUBECONFIG; run after bootstrapping the backup stack.
@@ -661,6 +673,18 @@ cluster-doks-audit *args:
   # shellcheck disable=SC2206
   dctl=(${DCTL:-nix run github:dantofa/platform#default --})
   "${dctl[@]}" digitalocean cluster audit {{args}}
+
+# The base domain's Cloudflare edge certificate: `request` (order and wait until
+# active), `verify` (fail unless active) or `delete`, e.g.
+# `just cluster doks edge-cert verify --base-domain "$DOKS_BASE_DOMAIN"`. Bootstrap
+# and `cluster doks delete` already do this; the recipe is for checking it directly.
+# Needs $CLOUDFLARE_CERT_TOKEN. Uses $DCTL.
+cluster-doks-edge-cert *args:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  # shellcheck disable=SC2206
+  dctl=(${DCTL:-nix run github:dantofa/platform#default --})
+  "${dctl[@]}" digitalocean cluster edge-cert {{args}}
 
 # Fetch the cluster's kubeconfig so the cluster-type-agnostic recipes
 # (`cluster verify health|backup|restore|image-scan`, `cluster debug`) can run

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,7 @@ func (f *fakeAPI) GetCertificatePack(_ context.Context, _, id string) (Pack, err
 
 func (f *fakeAPI) DeleteCertificatePack(_ context.Context, _, id string) error {
 	f.deleted = append(f.deleted, id)
+	f.packs = slices.DeleteFunc(f.packs, func(p Pack) bool { return p.ID == id })
 	return nil
 }
 
@@ -306,5 +308,67 @@ func TestOrphans(t *testing.T) {
 	}
 	if want := "gone,gone-pending"; strings.Join(ids, ",") != want {
 		t.Errorf("orphans = %v, want %s (the shared wildcard and foreign packs must never be reported)", ids, want)
+	}
+}
+
+func TestVerify(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		packs   []Pack
+		listErr error
+		wantErr string // substring; "" means success
+	}{
+		{"active", []Pack{{ID: "mine", Status: StatusActive, Hosts: Hosts(base)}}, nil, ""},
+		{"never ordered", nil, nil, "no edge certificate"},
+		{"only the shared wildcard", []Pack{{ID: "shared", Status: StatusActive, Hosts: Hosts("preview.dantofa.dev")}}, nil, "no edge certificate"},
+		{"another PR's", []Pack{{ID: "o", Status: StatusActive, Hosts: Hosts("auth-pr43.preview.dantofa.dev")}}, nil, "no edge certificate"},
+		{"still issuing", []Pack{{ID: "mine", Status: "pending_validation", Hosts: Hosts(base)}}, nil, "not active"},
+		{"timed out", []Pack{{ID: "mine", Status: "validation_timed_out", Hosts: Hosts(base)}}, nil, "no edge certificate"},
+		{"deleted", []Pack{{ID: "mine", Status: "deleted", Hosts: Hosts(base)}}, nil, "no edge certificate"},
+		{"no permission", nil, errors.New("403"), "SSL and Certificates"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Verify(context.Background(), &fakeAPI{packs: tc.packs, listErr: tc.listErr}, zone, base)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("unexpected error: %v", err)
+			case tc.wantErr == "" && p.ID != "mine":
+				t.Errorf("returned %+v", p)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLifecycle runs the whole cycle the CI drill drives against the real API:
+// request -> wait -> verify -> delete -> verify fails -> delete again is a no-op.
+func TestLifecycle(t *testing.T) {
+	ctx := context.Background()
+	api := &fakeAPI{initial: "pending_validation", activateAfter: 2}
+	if _, err := Verify(ctx, api, zone, base); err == nil {
+		t.Fatal("verify must fail before the certificate exists")
+	}
+	p, err := Request(ctx, api, zone, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(ctx, api, zone, base); err == nil {
+		t.Fatal("verify must fail while the certificate is still issuing")
+	}
+	if _, err := Wait(ctx, api, zone, p, time.Second, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(ctx, api, zone, base); err != nil {
+		t.Fatalf("verify must pass once active: %v", err)
+	}
+	if n, err := Delete(ctx, api, zone, base); err != nil || n != 1 {
+		t.Fatalf("Delete = %d, %v", n, err)
+	}
+	if _, err := Verify(ctx, api, zone, base); err == nil {
+		t.Fatal("verify must fail once the certificate is deleted")
+	}
+	if n, err := Delete(ctx, api, zone, base); err != nil || n != 0 {
+		t.Fatalf("a second Delete must be a no-op, got %d, %v", n, err)
 	}
 }

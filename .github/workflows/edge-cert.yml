@@ -1,0 +1,125 @@
+---
+# End-to-end drill for the per-cluster Cloudflare edge certificate (issue #99),
+# against the real API and with no cluster (so it costs one certificate slot for a
+# few minutes, not a billed DOKS cluster): order a certificate for a throwaway
+# base domain, wait for it to become active, assert the readiness check passes,
+# delete it, and assert the readiness check then fails. It is the only place the
+# token's Edit permission, the order parameters and Advanced Certificate Manager
+# on the zone are exercised, so it also runs weekly to catch a revoked permission
+# or a changed API before a real preview does.
+#
+# The base domain is unique per run and shaped like a preview's
+# (<name>.<suffix>.<zone>), so a leaked certificate is reported by `cluster doks
+# audit --zone` like any other orphan. The cleanup step runs even when the drill
+# fails or is cancelled.
+name: edge-cert
+on:
+  pull_request:
+    paths:
+      - internal/core/edgecert/**
+      - internal/clients/cloudflare/**
+      - internal/commands/digitalocean/**
+      - .github/workflows/edge-cert.yml
+  schedule:
+    - cron: "0 8 * * 1" # every Monday 08:00 UTC
+  workflow_dispatch: {}
+permissions: {}
+env:
+  FORCE_COLOR: ""
+  NO_COLOR: "1"
+  ZONE: dantofa.dev
+  BASE_DOMAIN: edgecert-ci-${{ github.run_id }}.preview.dantofa.dev
+# One drill at a time: each holds a certificate slot in the shared zone.
+concurrency:
+  group: edge-cert
+  cancel-in-progress: false
+jobs:
+  edge-cert:
+    # Fork PRs get no secrets, so there is nothing to order with.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: preview
+    permissions:
+      contents: read
+    env:
+      BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+      BWS_PROJECT_ID: ${{ vars.BWS_PROJECT_ID }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-api-${{ runner.os }}-${{ hashFiles('flake.lock', 'go.sum', '**/*.nix') }}
+          restore-prefixes-first-match: nix-api-${{ runner.os }}-
+          purge: true
+          purge-prefixes: nix-api-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # bws injects CLOUDFLARE_CERT_TOKEN from the shared secrets project; every
+      # step below runs through this wrapper.
+      - name: Install the command wrapper
+        run: |
+          cat > "$RUNNER_TEMP/dctl.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec nix develop .#api --command \
+            bws run --project-id "$BWS_PROJECT_ID" -- \
+            nix run .#default -- digitalocean cluster edge-cert "$@" \
+            --base-domain "$BASE_DOMAIN" --zone "$ZONE"
+          SCRIPT
+          chmod +x "$RUNNER_TEMP/dctl.sh"
+
+      - name: The certificate does not exist yet
+        run: |
+          if "$RUNNER_TEMP/dctl.sh" verify; then
+            echo "::error::verify passed for ${BASE_DOMAIN} before anything was ordered"
+            exit 1
+          fi
+
+      - name: Order the certificate and wait for it to become active
+        run: '"$RUNNER_TEMP/dctl.sh" request --timeout 1500'
+
+      - name: The readiness check passes
+        run: '"$RUNNER_TEMP/dctl.sh" verify'
+
+      # A second request must reuse the pack, not order a duplicate.
+      - name: Ordering again is idempotent
+        run: |
+          before="$("$RUNNER_TEMP/dctl.sh" verify | jq -r '.edge_cert.id')"
+          after="$("$RUNNER_TEMP/dctl.sh" request --timeout 60 | jq -r '.edge_cert.id')"
+          if [ "$before" != "$after" ]; then
+            echo "::error::a second request ordered a new certificate (${before} -> ${after})"
+            exit 1
+          fi
+
+      - name: Delete the certificate
+        run: |
+          deleted="$("$RUNNER_TEMP/dctl.sh" delete | jq -r '.deleted')"
+          if [ "$deleted" != "1" ]; then
+            echo "::error::expected to delete exactly 1 certificate, deleted ${deleted}"
+            exit 1
+          fi
+
+      - name: The readiness check fails once it is gone
+        run: |
+          if "$RUNNER_TEMP/dctl.sh" verify; then
+            echo "::error::verify still passes after the certificate was deleted"
+            exit 1
+          fi
+
+      # Runs on failure and cancellation too, so an interrupted drill does not
+      # leave a certificate behind. Idempotent: nothing left is a success.
+      - name: Clean up
+        if: always()
+        run: '"$RUNNER_TEMP/dctl.sh" delete'
