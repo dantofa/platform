@@ -2,6 +2,8 @@ package local
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,5 +68,32 @@ func TestKindConfigMatchesCoreIngressSpec(t *testing.T) {
 		if !strings.Contains(got, entry) {
 			t.Errorf("kindConfig missing mapping host %d -> node %d; got:\n%s", m.HostPort, m.NodePort, got)
 		}
+	}
+}
+
+// kind must never be left to pick its own kubeconfig: without --kubeconfig it
+// merges into $KUBECONFIG / ~/.kube/config and switches the current context.
+func TestKindCreateAndDeleteCarryKubeconfig(t *testing.T) {
+	for name, args := range map[string][]string{
+		"create": kindCreateArgs("local", "/tmp/scratch/kubeconfig"),
+		"delete": kindDeleteArgs("local", "/tmp/scratch/kubeconfig"),
+	} {
+		got := strings.Join(args, " ")
+		if !strings.Contains(got, "--name local") || !strings.Contains(got, "--kubeconfig /tmp/scratch/kubeconfig") {
+			t.Errorf("%s argv %q lacks --name/--kubeconfig", name, got)
+		}
+	}
+}
+
+func TestWithScratchKubeconfigIsRemoved(t *testing.T) {
+	var seen string
+	if err := withScratchKubeconfig(func(p string) error {
+		seen = p
+		return os.WriteFile(p, []byte("x"), 0o600)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(seen)); !os.IsNotExist(err) {
+		t.Errorf("scratch dir %s not removed: %v", filepath.Dir(seen), err)
 	}
 }

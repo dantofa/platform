@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	fluxcore "github.com/dantofa/platform/internal/core/flux"
+	localcore "github.com/dantofa/platform/internal/core/local"
 )
 
 // fluxNamespace is where Flux installs its controllers and where sources /
@@ -23,6 +24,10 @@ const fluxNamespace = "flux-system"
 // Client satisfies the core flux Engine, running the flux CLI against a
 // specific cluster's kubeconfig.
 var _ fluxcore.Engine = (*Client)(nil)
+
+// It also reconciles the local push's OCIRepository, on the cluster its
+// kubeconfig names rather than the ambient context.
+var _ localcore.SourceReconciler = (*Client)(nil)
 
 // Client runs the flux CLI against a specific cluster's kubeconfig.
 type Client struct {
@@ -75,6 +80,11 @@ func installArgs(version string) []string {
 		args = append(args, "--version", version)
 	}
 	return args
+}
+
+// ReconcileOCISource asks Flux to re-pull the OCIRepository named name now.
+func (c *Client) ReconcileOCISource(ctx context.Context, name string) error {
+	return c.run(ctx, "reconcile", "source", "oci", name)
 }
 
 // CreateGitSource registers (create-or-update) a GitRepository source.

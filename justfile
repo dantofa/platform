@@ -149,12 +149,25 @@ sast:
 # Requires the dev shell (kind/flux/kubectl/curl/jq/bws on PATH) and BWS_* in the
 # environment (for the ESO secret-zero). Uses bash-local vars (not just-interpolation)
 # so `just shellcheck` still lints it. A failed run leaves the cluster up for
-# debugging; run `just cluster local delete`.
+# debugging; run `just cluster local delete`. It also asserts the run leaves the user's
+# global kubeconfig exactly as it found it (absent counts): local credentials belong
+# in the project's .kubeconfig only.
 local-e2e:
   #!/usr/bin/env bash
   set -euo pipefail
   base_domain=local.dantofa.dev
+  global_kubeconfig="$HOME/.kube/config"
+  snapshot() { sha256sum "$global_kubeconfig" 2>/dev/null || echo absent; }
+  global_before="$(snapshot)"
   just cluster local create
+  if [ ! -s .kubeconfig ]; then
+    echo "e2e FAILED: create did not write .kubeconfig" >&2
+    exit 1
+  fi
+  if [ "$(snapshot)" != "$global_before" ]; then
+    echo "e2e FAILED: create modified ${global_kubeconfig}" >&2
+    exit 1
+  fi
   just cluster local verify
   export KUBECONFIG=.kubeconfig
   echo "Waiting for Traefik to be ready..."
@@ -177,6 +190,14 @@ local-e2e:
     sleep "$sleep"
   done
   just cluster local delete
+  if [ -e .kubeconfig ]; then
+    echo "e2e FAILED: delete left .kubeconfig behind" >&2
+    exit 1
+  fi
+  if [ "$(snapshot)" != "$global_before" ]; then
+    echo "e2e FAILED: the run modified ${global_kubeconfig}" >&2
+    exit 1
+  fi
 
 # Print how many non-deleted Cloudflare Tunnels are named <name> (via the bws
 # project's CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID). Internal helper for the

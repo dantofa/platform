@@ -108,7 +108,14 @@ type LocalClusterAPI interface {
 	RegistryIP(ctx context.Context, registryName string) (string, error)
 	GitProvenance(ctx context.Context) (source, revision string, err error)
 	PushArtifact(ctx context.Context, url, path, source, revision string) error
-	ReconcileSource(ctx context.Context, name string) error
+}
+
+// SourceReconciler nudges Flux to re-pull an OCIRepository on one specific
+// cluster. It is passed in already bound to that cluster's kubeconfig, never
+// left to the ambient context: a reconcile against whatever ~/.kube/config
+// currently selects could land on an unrelated (DOKS, prod) cluster.
+type SourceReconciler interface {
+	ReconcileOCISource(ctx context.Context, name string) error
 }
 
 // LocalClusterExistsError is returned when a cluster with the name already exists.
@@ -125,11 +132,20 @@ func (e *LocalClusterNotFoundError) Error() string {
 	return fmt.Sprintf("no local cluster named %q", e.Name)
 }
 
-// CreateResult reports the push endpoints of a freshly-created cluster.
+// CreateResult reports the push endpoints of a freshly-created cluster and the
+// kubeconfig file its credentials were written to.
 type CreateResult struct {
 	Name              string `json:"name"`
 	Registry          string `json:"registry"`
 	RegistryInCluster string `json:"registry_in_cluster"`
+	Kubeconfig        string `json:"kubeconfig"`
+}
+
+// DeleteResult reports a delete: the cluster removed (empty if none existed)
+// and what happened to its kubeconfig file.
+type DeleteResult struct {
+	Name       string            `json:"name,omitempty"`
+	Kubeconfig KubeconfigCleanup `json:"kubeconfig"`
 }
 
 // PushResult reports a completed artifact push + reconcile.
@@ -178,8 +194,9 @@ func ListClusters(ctx context.Context, client LocalClusterAPI) ([]string, error)
 }
 
 // CreateCluster creates a kind cluster (controlPlanes control-plane + workers
-// worker nodes) wired to an internal OCI registry.
-func CreateCluster(ctx context.Context, client LocalClusterAPI, name, registryName string, registryPort, controlPlanes, workers int) (CreateResult, error) {
+// worker nodes) wired to an internal OCI registry, and writes its kubeconfig to
+// kubeconfigPath (see ResolveKubeconfigPath).
+func CreateCluster(ctx context.Context, client LocalClusterAPI, name, registryName string, registryPort, controlPlanes, workers int, kubeconfigPath string) (CreateResult, error) {
 	existing, err := client.List(ctx)
 	if err != nil {
 		return CreateResult{}, err
@@ -190,27 +207,38 @@ func CreateCluster(ctx context.Context, client LocalClusterAPI, name, registryNa
 	if err := client.Create(ctx, name, registryName, registryPort, controlPlanes, workers); err != nil {
 		return CreateResult{}, err
 	}
+	if err := WriteKubeconfig(ctx, client, name, kubeconfigPath); err != nil {
+		return CreateResult{}, fmt.Errorf(
+			"cluster %q created, but writing its kubeconfig to %s failed (retry with `dctl local cluster connect`): %w",
+			name, kubeconfigPath, err,
+		)
+	}
 	return CreateResult{
 		Name:              name,
 		Registry:          fmt.Sprintf("localhost:%d", registryPort),
 		RegistryInCluster: fmt.Sprintf("%s:%d", registryName, RegistryInClusterPort),
+		Kubeconfig:        kubeconfigPath,
 	}, nil
 }
 
-// DeleteCluster deletes a local cluster. Idempotent: a missing cluster is a
-// no-op. Returns the name deleted, or "" if none existed.
-func DeleteCluster(ctx context.Context, client LocalClusterAPI, name string) (string, error) {
+// DeleteCluster deletes a local cluster, then removes the kubeconfig file create
+// wrote for it at kubeconfigPath (see RemoveKubeconfig for what it refuses to
+// remove). Idempotent: a missing cluster is a no-op, and a stale kubeconfig left
+// by an earlier run is still cleaned up.
+func DeleteCluster(ctx context.Context, client LocalClusterAPI, name, kubeconfigPath string) (DeleteResult, error) {
 	existing, err := client.List(ctx)
 	if err != nil {
-		return "", err
+		return DeleteResult{}, err
 	}
-	if !contains(existing, name) {
-		return "", nil
+	var res DeleteResult
+	if contains(existing, name) {
+		if err := client.Delete(ctx, name); err != nil {
+			return DeleteResult{}, err
+		}
+		res.Name = name
 	}
-	if err := client.Delete(ctx, name); err != nil {
-		return "", err
-	}
-	return name, nil
+	res.Kubeconfig, err = RemoveKubeconfig(kubeconfigPath, name)
+	return res, err
 }
 
 // PushArtifact publishes path as an OCI artifact to the local registry and nudges
@@ -218,22 +246,23 @@ func DeleteCluster(ctx context.Context, client LocalClusterAPI, name string) (st
 // immediate trigger — the OCIRepository may not exist yet (a first push, or
 // bootstrap's own pre-push), and Flux re-pulls on its interval regardless. So a
 // reconcile failure does not fail the push; the result's Reconciled is "" then.
-func PushArtifact(ctx context.Context, client LocalClusterAPI, name, tag, path string, registryPort int) (PushResult, error) {
+// A nil rec (no cluster to reconcile on) skips the reconcile.
+func PushArtifact(ctx context.Context, client LocalClusterAPI, rec SourceReconciler, name, tag, path string, registryPort int) (PushResult, error) {
 	source, revision, err := client.GitProvenance(ctx)
 	if err != nil {
 		return PushResult{}, err
 	}
-	return pushArtifact(ctx, client, name, tag, path, source, revision, registryPort)
+	return pushArtifact(ctx, client, rec, name, tag, path, source, revision, registryPort)
 }
 
-func pushArtifact(ctx context.Context, client LocalClusterAPI, name, tag, path, source, revision string, registryPort int) (PushResult, error) {
+func pushArtifact(ctx context.Context, client LocalClusterAPI, rec SourceReconciler, name, tag, path, source, revision string, registryPort int) (PushResult, error) {
 	reference := fmt.Sprintf("localhost:%d/%s:%s", registryPort, name, tag)
 	if err := client.PushArtifact(ctx, "oci://"+reference, path, source, revision); err != nil {
 		return PushResult{}, err
 	}
-	reconciled := name
-	if err := client.ReconcileSource(ctx, name); err != nil {
-		reconciled = ""
+	reconciled := ""
+	if rec != nil && rec.ReconcileOCISource(ctx, name) == nil {
+		reconciled = name
 	}
 	return PushResult{
 		Artifact: reference, Path: path, Source: source,
@@ -246,7 +275,7 @@ func pushArtifact(ctx context.Context, client LocalClusterAPI, name, tag, path, 
 // artifact, stamped with the platform source and revision. It never reads the
 // working directory, so it is correct from any project (a downstream's flux/
 // can't be mistaken for the platform's).
-func PushPlatformArtifact(ctx context.Context, client LocalClusterAPI, tree fs.FS, revision, name, tag string, registryPort int) (PushResult, error) {
+func PushPlatformArtifact(ctx context.Context, client LocalClusterAPI, rec SourceReconciler, tree fs.FS, revision, name, tag string, registryPort int) (PushResult, error) {
 	dir, err := os.MkdirTemp("", "dctl-platform-*")
 	if err != nil {
 		return PushResult{}, err
@@ -255,7 +284,7 @@ func PushPlatformArtifact(ctx context.Context, client LocalClusterAPI, tree fs.F
 	if err := writeTree(tree, dir); err != nil {
 		return PushResult{}, err
 	}
-	return pushArtifact(ctx, client, name, tag, dir, PlatformSource, revision, registryPort)
+	return pushArtifact(ctx, client, rec, name, tag, dir, PlatformSource, revision, registryPort)
 }
 
 // writeTree copies the tree into dir, preserving relative paths.

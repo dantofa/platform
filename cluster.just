@@ -532,7 +532,8 @@ cluster-verify-image-scan:
   echo "IMAGE SCAN GATE PASSED -- no unsuppressed CRITICAL vulnerabilities in platform images."
 
 # Create the kind cluster (1 control-plane + 2 workers), then bootstrap the platform
-# onto it. `*args` pass through to bootstrap (e.g. --grafana-cloud). Uses $DCTL (default:
+# onto it. dctl writes the cluster's credentials to ${KUBECONFIG:-.kubeconfig} (never
+# ~/.kube/config) and `cluster local delete` removes that file again. `*args` pass through to bootstrap (e.g. --grafana-cloud). Uses $DCTL (default:
 # `nix run github:dantofa/platform#default --`; the platform overrides it to
 # `go run ./cmd/dctl`).
 cluster-local-create *args:
@@ -568,6 +569,8 @@ cluster-local-verify:
   export KUBECONFIG=.kubeconfig
   # shellcheck disable=SC2206
   dctl=(${DCTL:-nix run github:dantofa/platform#default --})
+  # create already wrote .kubeconfig; refresh it anyway (harmless) so a cluster made
+  # by an older dctl, or one whose file was removed, still verifies.
   "${dctl[@]}" local cluster connect
   # Everything past `connect` is cluster-type-agnostic -- same gates as any other
   # cluster type runs.

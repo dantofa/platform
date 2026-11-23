@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -224,16 +225,34 @@ func (c *KindClient) PushArtifact(ctx context.Context, url, path, source, revisi
 	return err
 }
 
-// ReconcileSource reconciles the Flux OCIRepository named name.
-func (c *KindClient) ReconcileSource(ctx context.Context, name string) error {
-	_, err := run(ctx, []string{"flux", "reconcile", "source", "oci", name}, "")
-	return err
+// withScratchKubeconfig runs fn with a kubeconfig path in a fresh private temp
+// directory, removed afterwards. kind create/delete always edit a kubeconfig;
+// without --kubeconfig that is $KUBECONFIG or ~/.kube/config, where create
+// would also switch the user's current context. Handing kind a throwaway file
+// keeps both untouched — core writes the project kubeconfig itself.
+func withScratchKubeconfig(fn func(path string) error) error {
+	dir, err := os.MkdirTemp("", "dctl-kind-*")
+	if err != nil {
+		return &LocalClusterError{msg: err.Error()}
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	return fn(filepath.Join(dir, "kubeconfig"))
+}
+
+func kindCreateArgs(name, kubeconfig string) []string {
+	return []string{"kind", "create", "cluster", "--name", name, "--kubeconfig", kubeconfig, "--config", "-"}
+}
+
+func kindDeleteArgs(name, kubeconfig string) []string {
+	return []string{"kind", "delete", "cluster", "--name", name, "--kubeconfig", kubeconfig}
 }
 
 // Delete deletes the named cluster.
 func (c *KindClient) Delete(ctx context.Context, name string) error {
-	_, err := run(ctx, []string{"kind", "delete", "cluster", "--name", name}, "")
-	return err
+	return withScratchKubeconfig(func(kubeconfig string) error {
+		_, err := run(ctx, kindDeleteArgs(name, kubeconfig), "")
+		return err
+	})
 }
 
 // Create provisions a kind cluster wired to an internal OCI registry (the
@@ -242,7 +261,10 @@ func (c *KindClient) Create(ctx context.Context, name, registryName string, regi
 	if err := c.ensureRegistry(ctx, registryName, registryPort); err != nil {
 		return err
 	}
-	if _, err := runWithProgress(ctx, []string{"kind", "create", "cluster", "--name", name, "--config", "-"}, kindConfig(controlPlanes, workers), c.progress); err != nil {
+	if err := withScratchKubeconfig(func(kubeconfig string) error {
+		_, err := runWithProgress(ctx, kindCreateArgs(name, kubeconfig), kindConfig(controlPlanes, workers), c.progress)
+		return err
+	}); err != nil {
 		return err
 	}
 	if err := c.configureNodes(ctx, name, registryName, registryPort); err != nil {
