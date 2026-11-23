@@ -668,7 +668,9 @@ cluster-doks-list:
 # associated resources on teardown; this catches what that invariant can't (a
 # process killed between create and a later delete, a resource created outside
 # dctl entirely). `--zone <zone>` (repeatable) also reports per-cluster Cloudflare
-# edge certificates whose cluster is gone. Exits non-zero when anything is found.
+# edge certificates whose cluster is gone; add --prune-edge-certs to delete those (and
+# only those: never a shared or live cluster's, never one younger than --prune-grace).
+# Exits non-zero when anything is left over.
 # Uses $DCTL.
 cluster-doks-audit *args:
   #!/usr/bin/env bash

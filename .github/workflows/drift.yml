@@ -5,7 +5,11 @@
 # leak from outside that path -- a process killed between create and a later
 # delete, or a resource created outside dctl entirely. This lists every DO
 # Volume/VolumeSnapshot/LoadBalancer account-wide and fails the job if any
-# belong to no currently-live cluster.
+# belong to no currently-live cluster. Orphaned per-cluster Cloudflare edge
+# certificates are also deleted (--prune-edge-certs, issue #103): they consume
+# the zone's shared certificate budget, and bootstrap refuses to order once it
+# runs low, so leaving them for a human would eventually block every preview.
+# Their ownership test is exact; the DO resources stay report-only.
 name: drift
 on:
   schedule:
@@ -42,14 +46,14 @@ jobs:
           purge-primary-key: never
 
       # bws injects the DigitalOcean token (DIGITALOCEAN_ACCESS_TOKEN) and the
-      # certificate token (CLOUDFLARE_CERT_TOKEN, for the --zone edge-certificate
-      # check) from the shared secrets project. The report (ids, names, sizes, regions) lands
+      # certificate token (CLOUDFLARE_CERT_TOKEN, with SSL and Certificates edit
+      # permission, for the --zone check and the prune) from the shared secrets project. The report (ids, names, sizes, regions) lands
       # in this step's log; the command exits non-zero whenever it is non-empty,
       # failing this job so a scheduled-run notification is the alert.
-      - name: Audit for orphaned Volumes/Snapshots/LoadBalancers/Edge Certificates
+      - name: Audit for orphaned Volumes/Snapshots/LoadBalancers, prune orphaned Edge Certificates
         env:
           BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
         run: >-
           nix develop .#api --command
           bws run --project-id ${{ vars.BWS_PROJECT_ID }} --
-          nix run .#default -- digitalocean cluster audit --zone dantofa.dev
+          nix run .#default -- digitalocean cluster audit --zone dantofa.dev --prune-edge-certs

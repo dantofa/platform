@@ -7,7 +7,9 @@ package cloudflare
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
@@ -158,22 +160,50 @@ func toPack(p cf.CertificatePack) edgecert.Pack {
 	return edgecert.Pack{ID: p.ID, Type: p.Type, Status: p.Status, Hosts: p.Hosts}
 }
 
+// certPacksPerPage is the page size the pack listing asks for. Cloudflare
+// defaults to 20, which a zone near the order ceiling (edgecert.OrderCeiling)
+// far exceeds.
+const certPacksPerPage = 50
+
+// listedPack is a certificate pack as the list endpoint returns it, including
+// created_on, which cf.CertificatePack does not map.
+type listedPack struct {
+	cf.CertificatePack
+	CreatedOn time.Time `json:"created_on"`
+}
+
 // ListCertificatePacks returns every certificate pack on the zone, in any
-// status. Implements edgecert.API.
+// status, across all pages. It does not use cf.API.ListCertificatePacks: that
+// fetches only the first page (20 packs), which would let the order ceiling,
+// Find and the orphan audit all miss packs, and it drops created_on, which the
+// orphan prune's grace period needs. Implements edgecert.API.
 func (c *Client) ListCertificatePacks(ctx context.Context, zone string) ([]edgecert.Pack, error) {
 	rc, err := c.resolveZone(zone)
 	if err != nil {
 		return nil, err
 	}
-	packs, err := c.api.ListCertificatePacks(ctx, rc.Identifier)
-	if err != nil {
-		return nil, err
+	var out []edgecert.Pack
+	for page := 1; ; page++ {
+		res, err := c.api.Raw(ctx, http.MethodGet, fmt.Sprintf(
+			"/zones/%s/ssl/certificate_packs?status=all&per_page=%d&page=%d",
+			rc.Identifier, certPacksPerPage, page,
+		), nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		var packs []listedPack
+		if err := json.Unmarshal(res.Result, &packs); err != nil {
+			return nil, fmt.Errorf("decoding certificate packs: %w", err)
+		}
+		for _, p := range packs {
+			pack := toPack(p.CertificatePack)
+			pack.CreatedOn = p.CreatedOn
+			out = append(out, pack)
+		}
+		if res.ResultInfo == nil || page >= res.ResultInfo.TotalPages || len(packs) == 0 {
+			return out, nil
+		}
 	}
-	out := make([]edgecert.Pack, len(packs))
-	for i := range packs {
-		out[i] = toPack(packs[i])
-	}
-	return out, nil
 }
 
 // OrderCertificatePack orders an Advanced certificate for hosts. Implements

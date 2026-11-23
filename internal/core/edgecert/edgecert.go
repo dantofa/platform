@@ -50,13 +50,23 @@ type Pack struct {
 	Type   string   `json:"type,omitempty"`
 	Status string   `json:"status"`
 	Hosts  []string `json:"hosts"`
+	// CreatedOn is when the pack was ordered (zero when the API call that
+	// returned it does not report it; the list does).
+	CreatedOn time.Time `json:"created_on,omitzero"`
 }
+
+// Retry budget for a single Cloudflare call on the delete path: ride out a
+// dropped connection, fail fast on an API answer (see retry.Transient).
+const (
+	callTimeout = 30 * time.Second
+	callDelay   = 2 * time.Second
+)
 
 // API is the Cloudflare certificate surface (satisfied by clients/cloudflare).
 type API interface {
 	// ListCertificatePacks returns every certificate pack on the zone, in any
 	// status. It needs the token's SSL and Certificates read permission.
-	ListCertificatePacks(ctx context.Context, zone string) ([]Pack, error)
+	ListCertificatePacks(ctx context.Context, zone string) ([]Pack, error) // every page
 	// OrderCertificatePack orders an Advanced certificate for hosts.
 	OrderCertificatePack(ctx context.Context, zone string, hosts []string) (Pack, error)
 	// GetCertificatePack returns one pack by id.
@@ -112,7 +122,7 @@ type CeilingError struct{ Count, Ceiling int }
 
 func (e *CeilingError) Error() string {
 	return fmt.Sprintf("the zone already has %d edge certificates (ordering stops at %d of an assumed limit of %d); "+
-		"run `dctl digitalocean cluster audit` to find leaked ones and delete them",
+		"run `dctl digitalocean cluster audit --zone <zone> --prune-edge-certs` to delete leaked ones",
 		e.Count, e.Ceiling, ZoneLimit)
 }
 
@@ -204,7 +214,7 @@ func Verify(ctx context.Context, api API, zone, baseDomain string) (Pack, error)
 // Delete removes every certificate that exactly matches baseDomain's hosts and
 // returns how many it deleted. Idempotent: none left is a success.
 func Delete(ctx context.Context, api API, zone, baseDomain string) (int, error) {
-	packs, err := api.ListCertificatePacks(ctx, zone)
+	packs, err := List(ctx, api, zone)
 	if err != nil {
 		return 0, fmt.Errorf("listing edge certificates: %w", err)
 	}
@@ -214,13 +224,35 @@ func Delete(ctx context.Context, api API, zone, baseDomain string) (int, error) 
 		if !Owns(p, baseDomain) || p.Status == "deleted" {
 			continue
 		}
-		if err := api.DeleteCertificatePack(ctx, zone, p.ID); err != nil {
-			errs = append(errs, fmt.Errorf("deleting edge certificate %s: %w", p.ID, err))
+		if err := DeletePack(ctx, api, zone, p); err != nil {
+			errs = append(errs, err)
 			continue
 		}
 		n++
 	}
 	return n, errors.Join(errs...)
+}
+
+// List returns every pack on the zone, retrying a transport failure.
+func List(ctx context.Context, api API, zone string) ([]Pack, error) {
+	var packs []Pack
+	err := retry.Do(ctx, callTimeout, callDelay, func() (err error) {
+		packs, err = api.ListCertificatePacks(ctx, zone)
+		return err
+	})
+	return packs, err
+}
+
+// DeletePack deletes one pack, retrying a transport failure. It is the single
+// delete both teardown (Delete) and the orphan prune go through.
+func DeletePack(ctx context.Context, api API, zone string, p Pack) error {
+	err := retry.Do(ctx, callTimeout, callDelay, func() error {
+		return api.DeleteCertificatePack(ctx, zone, p.ID)
+	})
+	if err != nil {
+		return fmt.Errorf("deleting edge certificate %s: %w", p.ID, err)
+	}
+	return nil
 }
 
 // Orphans returns the per-cluster certificates in packs whose cluster is gone.
