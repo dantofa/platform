@@ -16,7 +16,6 @@ type fakeLocalAPI struct {
 	created    string
 	deleted    string
 	pushedURL  string
-	reconciled string
 	pushedPath string
 	pushedFile string // content of flux/cluster/a.yaml at push time
 	pushedSrc  string
@@ -26,6 +25,7 @@ type fakeLocalAPI struct {
 func (f *fakeLocalAPI) List(context.Context) ([]string, error) { return f.clusters, nil }
 func (f *fakeLocalAPI) Create(_ context.Context, name, _ string, _, _, _ int) error {
 	f.created = name
+	f.clusters = append(f.clusters, name)
 	return nil
 }
 func (f *fakeLocalAPI) Delete(_ context.Context, name string) error { f.deleted = name; return nil }
@@ -50,9 +50,14 @@ func (f *fakeLocalAPI) PushArtifact(_ context.Context, url, path, source, revisi
 	return nil
 }
 
-func (f *fakeLocalAPI) ReconcileSource(_ context.Context, name string) error {
-	f.reconciled = name
-	return nil
+type fakeReconciler struct {
+	reconciled string
+	err        error
+}
+
+func (r *fakeReconciler) ReconcileOCISource(_ context.Context, name string) error {
+	r.reconciled = name
+	return r.err
 }
 
 func TestListClustersEmptyIsNonNil(t *testing.T) {
@@ -71,7 +76,7 @@ func TestListClustersEmptyIsNonNil(t *testing.T) {
 
 func TestCreateClusterExists(t *testing.T) {
 	f := &fakeLocalAPI{clusters: []string{"local"}}
-	_, err := CreateCluster(context.Background(), f, "local", "reg", 5001, 1, 3)
+	_, err := CreateCluster(context.Background(), f, "local", "reg", 5001, 1, 3, filepath.Join(t.TempDir(), "kc"))
 	var ex *LocalClusterExistsError
 	if !errors.As(err, &ex) {
 		t.Fatalf("expected LocalClusterExistsError, got %v", err)
@@ -80,39 +85,94 @@ func TestCreateClusterExists(t *testing.T) {
 
 func TestCreateClusterEndpoints(t *testing.T) {
 	f := &fakeLocalAPI{}
-	res, err := CreateCluster(context.Background(), f, "local", "kind-registry", 5001, 1, 3)
+	path := filepath.Join(t.TempDir(), ".kubeconfig")
+	res, err := CreateCluster(context.Background(), f, "local", "kind-registry", 5001, 1, 3, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Registry != "localhost:5001" || res.RegistryInCluster != "kind-registry:5000" {
 		t.Fatalf("wrong endpoints: %+v", res)
 	}
+	if res.Kubeconfig != path {
+		t.Errorf("result kubeconfig = %q, want %q", res.Kubeconfig, path)
+	}
+}
+
+// Create writes the project kubeconfig itself (kind only ever gets a scratch
+// file), owner-only since it carries cluster-admin credentials.
+func TestCreateClusterWritesKubeconfigOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".kubeconfig")
+	if _, err := CreateCluster(context.Background(), &fakeLocalAPI{}, "local", "reg", 5001, 1, 0, path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("kubeconfig mode = %o, want 600", perm)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "kubeconfig" {
+		t.Errorf("kubeconfig content = %q", b)
+	}
 }
 
 func TestDeleteClusterIdempotent(t *testing.T) {
 	f := &fakeLocalAPI{}
-	name, err := DeleteCluster(context.Background(), f, "ghost")
-	if err != nil || name != "" {
-		t.Fatalf("missing cluster should be a no-op, got %q err %v", name, err)
+	path := filepath.Join(t.TempDir(), ".kubeconfig")
+	res, err := DeleteCluster(context.Background(), f, "ghost", path)
+	if err != nil || res.Name != "" || res.Kubeconfig.Skipped != SkipKubeconfigAbsent {
+		t.Fatalf("missing cluster should be a no-op, got %+v err %v", res, err)
 	}
 	f.clusters = []string{"local"}
-	name, err = DeleteCluster(context.Background(), f, "local")
-	if err != nil || name != "local" || f.deleted != "local" {
-		t.Fatalf("expected local deleted, got %q err %v", name, err)
+	res, err = DeleteCluster(context.Background(), f, "local", path)
+	if err != nil || res.Name != "local" || f.deleted != "local" {
+		t.Fatalf("expected local deleted, got %+v err %v", res, err)
+	}
+}
+
+// A stale kubeconfig from an earlier run is cleaned up even when the cluster
+// itself is already gone.
+func TestDeleteClusterRemovesKubeconfig(t *testing.T) {
+	path := writeFile(t, kindKubeconfig("local"))
+	res, err := DeleteCluster(context.Background(), &fakeLocalAPI{}, "local", path)
+	if err != nil || !res.Kubeconfig.Removed {
+		t.Fatalf("want kubeconfig removed, got %+v err %v", res, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("kubeconfig still present: %v", err)
 	}
 }
 
 func TestPushArtifactAssemblesAndReconciles(t *testing.T) {
-	f := &fakeLocalAPI{}
-	res, err := PushArtifact(context.Background(), f, DefaultArtifactName, "latest", "flux/", 5001)
+	f, rec := &fakeLocalAPI{}, &fakeReconciler{}
+	res, err := PushArtifact(context.Background(), f, rec, DefaultArtifactName, "latest", "flux/", 5001)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if f.pushedURL != "oci://localhost:5001/platform:latest" {
 		t.Errorf("wrong push url: %q", f.pushedURL)
 	}
-	if f.reconciled != DefaultArtifactName || res.Revision != "main@sha1:abc" {
-		t.Errorf("wrong result: reconciled=%q res=%+v", f.reconciled, res)
+	if rec.reconciled != DefaultArtifactName || res.Reconciled != DefaultArtifactName || res.Revision != "main@sha1:abc" {
+		t.Errorf("wrong result: reconciled=%q res=%+v", rec.reconciled, res)
+	}
+}
+
+// No cluster means no reconciler: the push publishes and skips the reconcile,
+// rather than running it against whatever the ambient kubeconfig selects.
+func TestPushArtifactWithoutClusterSkipsReconcile(t *testing.T) {
+	res, err := PushArtifact(context.Background(), &fakeLocalAPI{}, nil, "auth", "latest", "flux/", 5001)
+	if err != nil || res.Reconciled != "" || res.Artifact != "localhost:5001/auth:latest" {
+		t.Fatalf("got %+v err %v", res, err)
+	}
+}
+
+// The reconcile is best-effort: its failure leaves Reconciled empty, not the push failed.
+func TestPushArtifactReconcileFailureIsNotFatal(t *testing.T) {
+	rec := &fakeReconciler{err: errors.New("no such OCIRepository")}
+	res, err := PushArtifact(context.Background(), &fakeLocalAPI{}, rec, "auth", "latest", "flux/", 5001)
+	if err != nil || res.Reconciled != "" {
+		t.Fatalf("got %+v err %v", res, err)
 	}
 }
 
@@ -128,7 +188,7 @@ func TestGetKubeconfigNotFound(t *testing.T) {
 func TestPushPlatformArtifactPublishesEmbeddedTree(t *testing.T) {
 	f := &fakeLocalAPI{}
 	tree := fstest.MapFS{"flux/cluster/a.yaml": {Data: []byte("kind: X\n")}}
-	res, err := PushPlatformArtifact(context.Background(), f, tree, "2026.11.01+gabc", DefaultArtifactName, "latest", 5001)
+	res, err := PushPlatformArtifact(context.Background(), f, nil, tree, "2026.11.01+gabc", DefaultArtifactName, "latest", 5001)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -125,17 +125,6 @@ func newLocalBootstrapCmd() *cobra.Command {
 			name := nameArg(args)
 			kindClient := localclient.NewKindClient()
 
-			// Publish the platform's flux/ tree first, so the OCIRepository the
-			// bootstrap registers can pull it immediately (no separate `push`).
-			// By default that is the tree embedded in this binary (its own rev),
-			// so it works from any directory; --platform-path overrides it with
-			// a checkout (e.g. uncommitted edits).
-			pushed, err := pushPlatform(ctx, kindClient, platformPath, artifactName, tag,
-				localcore.DefaultRegistryPort)
-			if err != nil {
-				return render.Fail(err)
-			}
-
 			kubeconfig, err := localcore.GetKubeconfig(ctx, kindClient, name)
 			if err != nil {
 				return render.Fail(err)
@@ -145,6 +134,17 @@ func newLocalBootstrapCmd() *cobra.Command {
 				return render.Fail(err)
 			}
 			defer cleanup()
+
+			// Publish the platform's flux/ tree first, so the OCIRepository the
+			// bootstrap registers can pull it immediately (no separate `push`).
+			// By default that is the tree embedded in this binary (its own rev),
+			// so it works from any directory; --platform-path overrides it with
+			// a checkout (e.g. uncommitted edits).
+			pushed, err := pushPlatform(ctx, kindClient, fluxclient.New(kubePath), platformPath, artifactName, tag,
+				localcore.DefaultRegistryPort)
+			if err != nil {
+				return render.Fail(err)
+			}
 
 			// Create the velero namespace imperatively before Flux reconciles, so
 			// no local Flux stack has to declare it (the reused flux/cluster/velero
@@ -313,19 +313,23 @@ func newLocalListCmd() *cobra.Command {
 
 func newLocalCreateCmd() *cobra.Command {
 	var (
-		registryName           string
-		registryPort           int
-		controlPlanes, workers int
-		verbose                bool
+		registryName, kubeconfig string
+		registryPort             int
+		controlPlanes, workers   int
+		verbose                  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "create [name]",
 		Short: "Create a kind cluster wired to an internal OCI registry.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			kubePath, err := localcore.ResolveKubeconfigPath(kubeconfig, os.Getenv("KUBECONFIG"))
+			if err != nil {
+				return render.Fail(err)
+			}
 			client := localclient.NewKindClient(localclient.WithProgress(verbose))
 			result, err := localcore.CreateCluster(cmd.Context(), client,
-				nameArg(args), registryName, registryPort, controlPlanes, workers)
+				nameArg(args), registryName, registryPort, controlPlanes, workers, kubePath)
 			if err != nil {
 				return render.Fail(err)
 			}
@@ -343,16 +347,25 @@ func newLocalCreateCmd() *cobra.Command {
 		"Number of worker nodes (0 for a single-node control-plane).")
 	f.BoolVar(&verbose, "verbose", false,
 		"Stream kind's provisioning progress to stderr as it runs.")
+	f.StringVar(&kubeconfig, "kubeconfig", "", kubeconfigFlagHelp("Where to write the cluster's kubeconfig"))
 	return cmd
 }
 
+// kubeconfigFlagHelp describes a local --kubeconfig flag's default resolution
+// (localcore.ResolveKubeconfigPath). ~/.kube/config is never the default.
+func kubeconfigFlagHelp(what string) string {
+	return what + " (default $KUBECONFIG, else " + localcore.DefaultKubeconfigPath +
+		"; a multi-entry $KUBECONFIG is rejected)."
+}
+
 // pushPlatform publishes the platform artifact: the checkout at platformPath when
-// given, else the flux/ tree embedded in this binary.
-func pushPlatform(ctx context.Context, client *localclient.KindClient, platformPath, name, tag string, registryPort int) (localcore.PushResult, error) {
+// given, else the flux/ tree embedded in this binary. rec (nil: none) is the
+// target cluster's reconciler.
+func pushPlatform(ctx context.Context, client *localclient.KindClient, rec localcore.SourceReconciler, platformPath, name, tag string, registryPort int) (localcore.PushResult, error) {
 	if platformPath != "" {
-		return localcore.PushArtifact(ctx, client, name, tag, platformPath, registryPort)
+		return localcore.PushArtifact(ctx, client, rec, name, tag, platformPath, registryPort)
 	}
-	return localcore.PushPlatformArtifact(ctx, client, platform.Flux, version.Version, name, tag, registryPort)
+	return localcore.PushPlatformArtifact(ctx, client, rec, platform.Flux, version.Version, name, tag, registryPort)
 }
 
 func newLocalPushCmd() *cobra.Command {
@@ -373,41 +386,51 @@ func newLocalPushCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			client := localclient.NewKindClient()
-			var (
-				result localcore.PushResult
-				err    error
-			)
+
+			// Resolve the target cluster first: the push's reconcile and the
+			// source registration both go to it, through its own kubeconfig --
+			// never the ambient context, which may name an unrelated cluster.
+			// A nil reconciler (no such cluster) skips the reconcile.
+			var rec localcore.SourceReconciler
+			var kubePath string
+			kubeconfig, err := localcore.GetKubeconfig(ctx, client, cluster)
+			var notFound *localcore.LocalClusterNotFoundError
+			switch {
+			case errors.As(err, &notFound):
+			case err != nil:
+				return render.Fail(err)
+			default:
+				var cleanup func()
+				kubePath, cleanup, err = writeTempKubeconfig([]byte(kubeconfig))
+				if err != nil {
+					return render.Fail(err)
+				}
+				defer cleanup()
+				rec = fluxclient.New(kubePath)
+			}
+
+			var result localcore.PushResult
 			if path == "" && name == localcore.DefaultArtifactName {
 				// The platform artifact: the embedded tree, not the cwd's flux/.
-				result, err = pushPlatform(ctx, client, "", name, tag, registryPort)
+				result, err = pushPlatform(ctx, client, rec, "", name, tag, registryPort)
 			} else {
 				if path == "" {
 					path = localcore.DefaultArtifactPath
 				}
-				result, err = localcore.PushArtifact(ctx, client, name, tag, path, registryPort)
+				result, err = localcore.PushArtifact(ctx, client, rec, name, tag, path, registryPort)
 			}
 			if err != nil {
 				return render.Fail(err)
 			}
 
-			kubeconfig, err := localcore.GetKubeconfig(ctx, client, cluster)
-			var notFound *localcore.LocalClusterNotFoundError
-			switch {
-			case errors.As(err, &notFound):
+			if rec == nil {
 				// Published only. Say so: a typo'd --cluster must not look like a
 				// push that registered a source.
 				result.SourceSkipped = localcore.SkipNoCluster(cluster)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"note: %s; artifact published, no OCIRepository registered\n", result.SourceSkipped)
 				return render.JSON(result)
-			case err != nil:
-				return render.Fail(err)
 			}
-			kubePath, cleanup, err := writeTempKubeconfig([]byte(kubeconfig))
-			if err != nil {
-				return render.Fail(err)
-			}
-			defer cleanup()
 			result.OCIRepository, result.SourceSkipped, err = localcore.RegisterSource(ctx, client,
 				fluxclient.New(kubePath), registryName, name, tag)
 			if err != nil {
@@ -428,56 +451,80 @@ func newLocalPushCmd() *cobra.Command {
 }
 
 func newLocalDeleteCmd() *cobra.Command {
-	var force, noTeardown bool
+	var (
+		force, noTeardown bool
+		kubeconfig        string
+	)
 	cmd := &cobra.Command{
 		Use:   "delete [name]",
 		Short: "Delete a local cluster. Idempotent: succeeds if already absent.",
 		Long: "Delete a local cluster. First gracefully tears down its ingress so the " +
 			"tunnel controller removes the Cloudflare records (and they are not " +
 			"orphaned once the cluster is gone). --no-teardown skips this; --force " +
-			"deletes anyway if teardown fails.",
+			"deletes anyway if teardown fails. Then removes the kubeconfig file create " +
+			"wrote, but only if it holds nothing except this cluster's credentials.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			name := nameArg(args)
-			if !noTeardown {
-				if err := teardownCluster(ctx, name, force); err != nil {
-					return err // already rendered
-				}
-			}
-			if _, err := localcore.DeleteCluster(ctx, localclient.NewKindClient(), name); err != nil {
+			kubePath, err := localcore.ResolveKubeconfigPath(kubeconfig, os.Getenv("KUBECONFIG"))
+			if err != nil {
 				return render.Fail(err)
 			}
-			return nil
+			out := map[string]any{}
+			if !noTeardown {
+				res, err := teardownCluster(ctx, name, force)
+				if err != nil {
+					return err // already rendered
+				}
+				if res != nil {
+					out["teardown"] = res
+				}
+			}
+			res, err := localcore.DeleteCluster(ctx, localclient.NewKindClient(), name, kubePath)
+			if err != nil {
+				return render.Fail(err)
+			}
+			if res.Kubeconfig.Skipped == localcore.SkipKubeconfigForeign {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "note: %s: %s\n", res.Kubeconfig.Path, res.Kubeconfig.Skipped)
+			}
+			if res.Name != "" {
+				out["name"] = res.Name
+			}
+			out["kubeconfig"] = res.Kubeconfig
+			return render.JSON(out)
 		},
 	}
 	f := cmd.Flags()
+	f.StringVar(&kubeconfig, "kubeconfig", "", kubeconfigFlagHelp("Kubeconfig file create wrote, removed after the cluster"))
 	f.BoolVar(&force, "force", false, "Delete even if graceful ingress teardown fails (may orphan DNS records).")
 	f.BoolVar(&noTeardown, "no-teardown", false, "Skip graceful ingress teardown and destroy immediately.")
 	return cmd
 }
 
 // teardownCluster runs the graceful ingress/DNS drain before a local cluster is
-// destroyed. A cluster that no longer exists is a no-op. On failure it renders
-// the error and returns it unless force is set (then it warns and proceeds).
-func teardownCluster(ctx context.Context, name string, force bool) error {
+// destroyed, returning its result (nil when there was nothing to tear down or
+// it failed under --force). A cluster that no longer exists is a no-op. On
+// failure it renders the error and returns it unless force is set (then it
+// warns and proceeds).
+func teardownCluster(ctx context.Context, name string, force bool) (*teardowncore.Result, error) {
 	kubeconfig, err := localcore.GetKubeconfig(ctx, localclient.NewKindClient(), name)
 	if err != nil {
 		var notFound *localcore.LocalClusterNotFoundError
 		if errors.As(err, &notFound) {
-			return nil // nothing to tear down
+			return nil, nil // nothing to tear down
 		}
-		return teardownFailed(fmt.Errorf("reading kubeconfig for teardown: %w", err), force)
+		return nil, teardownFailed(fmt.Errorf("reading kubeconfig for teardown: %w", err), force)
 	}
 	kc, err := kube.NewFromKubeconfig([]byte(kubeconfig))
 	if err != nil {
-		return teardownFailed(fmt.Errorf("connecting to cluster for teardown: %w", err), force)
+		return nil, teardownFailed(fmt.Errorf("connecting to cluster for teardown: %w", err), force)
 	}
 	res, err := teardowncore.Run(ctx, kc, kc, newCFClient, nil, teardownTimeout, teardownInterval)
 	if err != nil {
-		return teardownFailed(err, force)
+		return nil, teardownFailed(err, force)
 	}
-	return render.JSON(map[string]any{"teardown": res})
+	return &res, nil
 }
 
 func teardownFailed(err error, force bool) error {

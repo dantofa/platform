@@ -303,7 +303,10 @@ into your recipes):
   `:80`/`:443`; no Cloudflare, no tunnel. Bootstrap publishes the platform's `flux/`
   tree **embedded in `dctl`** (the rev your flake pins), so it runs from your repo with
   no platform checkout; your own `flux/` is published separately
-  (`dctl local cluster push --name <yours>`).
+  (`dctl local cluster push --name <yours>`). The cluster's credentials live in the
+  project's `.kubeconfig` (or `$KUBECONFIG` / `--kubeconfig` when set): `create` writes
+  it and `delete` removes it. Your global `~/.kube/config` and its current context are
+  never touched.
 - **Preview (DOKS, ephemeral)** —
   `dctl … cluster bootstrap --base-domain preview.dantofa.dev [--grafana-cloud]`.
   Ingress is the Cloudflare Tunnel, which terminates TLS at the edge, so **no
