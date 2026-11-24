@@ -2,6 +2,7 @@ package digitalocean
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -301,16 +302,78 @@ func DeleteCluster(ctx context.Context, client ClusterDeleteAPI, name string, re
 	if !ok {
 		return DeleteResult{}, nil
 	}
-	resources, err := client.AssociatedResources(ctx, existing.ID)
+	resources, err := deleteWithAssociated(ctx, client, existing.ID)
 	if err != nil {
-		return DeleteResult{}, err
-	}
-	if err := client.DeleteSelective(ctx, existing.ID, resources); err != nil {
 		return DeleteResult{}, err
 	}
 	result := DeleteResult{ID: existing.ID, Associated: resources}
 	result.ReapedVolumeIDs, err = reapTaggedVolumes(ctx, client, existing.ID, reapTimeout, reapInterval)
 	return result, err
+}
+
+// deleteSelectiveAttempts bounds how many times DeleteCluster re-lists and
+// retries after DigitalOcean rejects a listed resource as unmanaged.
+const deleteSelectiveAttempts = 5
+
+// UnmanagedResourceError is DigitalOcean rejecting a selective delete because
+// one resource in it is no longer the cluster's to delete -- typically a PVC
+// Volume the CSI driver removed between the associated-resources list and the
+// delete. The whole delete is refused, so the cluster is left running.
+type UnmanagedResourceError struct {
+	ID  string
+	Err error
+}
+
+func (e *UnmanagedResourceError) Error() string { return e.Err.Error() }
+func (e *UnmanagedResourceError) Unwrap() error { return e.Err }
+
+// deleteWithAssociated lists the cluster's associated resources and deletes the
+// cluster with them. A resource DigitalOcean rejects as unmanaged is dropped and
+// the delete retried on a fresh listing, since one stale entry must not leave a
+// billed cluster behind; a dropped Volume is still reaped by the tag sweep that
+// follows. Returns what the successful delete was given.
+func deleteWithAssociated(ctx context.Context, client ClusterDeleteAPI, id string) (AssociatedResources, error) {
+	rejected := map[string]bool{}
+	var err error
+	for range deleteSelectiveAttempts {
+		var resources AssociatedResources
+		resources, err = client.AssociatedResources(ctx, id)
+		if err != nil {
+			return AssociatedResources{}, err
+		}
+		resources = resources.without(rejected)
+		err = client.DeleteSelective(ctx, id, resources)
+		var unmanaged *UnmanagedResourceError
+		if !errors.As(err, &unmanaged) || rejected[unmanaged.ID] {
+			if err != nil {
+				return AssociatedResources{}, err
+			}
+			return resources, nil
+		}
+		rejected[unmanaged.ID] = true
+	}
+	return AssociatedResources{}, err
+}
+
+// without returns r minus the given resource IDs.
+func (r AssociatedResources) without(ids map[string]bool) AssociatedResources {
+	keep := func(in []string) []string {
+		if in == nil {
+			return nil
+		}
+		out := []string{}
+		for _, id := range in {
+			if !ids[id] {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	return AssociatedResources{
+		VolumeIDs:         keep(r.VolumeIDs),
+		VolumeSnapshotIDs: keep(r.VolumeSnapshotIDs),
+		LoadBalancerIDs:   keep(r.LoadBalancerIDs),
+	}
 }
 
 // reapTaggedVolumes deletes every Volume tagged k8s:<clusterID> once it has
