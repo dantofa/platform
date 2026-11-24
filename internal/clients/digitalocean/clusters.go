@@ -2,9 +2,11 @@ package digitalocean
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 
 	"github.com/digitalocean/godo"
 
@@ -144,9 +146,28 @@ func (c *ClusterClient) DeleteSelective(ctx context.Context, id string, resource
 		LoadBalancers:   resources.LoadBalancerIDs,
 	})
 	if err != nil {
-		return apiError(err)
+		return deleteSelectiveError(err)
 	}
 	return nil
+}
+
+// unmanagedResource matches DigitalOcean's refusal of a selective delete naming
+// a resource that is no longer the cluster's, e.g.
+// "resource [do:volume:<id>] specified is not a managed resource".
+var unmanagedResource = regexp.MustCompile(`resource \[do:[a-z_]+:([^\]\s]+)\] specified is not a managed resource`)
+
+// deleteSelectiveError translates a DeleteSelective failure, surfacing an
+// unmanaged-resource refusal as core's typed error so DeleteCluster can drop
+// that resource and retry.
+func deleteSelectiveError(err error) error {
+	wrapped := apiError(err)
+	var doErr *godo.ErrorResponse
+	if errors.As(err, &doErr) {
+		if m := unmanagedResource.FindStringSubmatch(doErr.Message); m != nil {
+			return &core.UnmanagedResourceError{ID: m[1], Err: wrapped}
+		}
+	}
+	return wrapped
 }
 
 func resourceIDs(resources []*godo.AssociatedResource) []string {
