@@ -175,8 +175,16 @@ kind cluster is separate and unchanged: `dctl local cluster push --name <yours>`
     certificates whose cluster no longer exists, and exits non-zero. A certificate counts
     as a cluster's own when its hosts are `{*.<cluster>.<suffix>, <cluster>.<suffix>}`
     with the suffix at least one label below the zone apex; certificates one level below
-    the apex (the shared `*.preview.…`) are never reported. The scheduled drift job
-    passes `--zone dantofa.dev`.
+    the apex (the shared `*.preview.…`) are never reported. `--prune-edge-certs` also
+    deletes them, and nothing else. A certificate is only deleted once it is older than
+    `--prune-grace` (default 2h), because certificates ordered without a cluster (the
+    drill, a manual `edge-cert request`) look orphaned while they live. Each certificate's
+    cluster is also re-checked against a fresh cluster list right before its delete. The
+    report marks each one `deleted`, `failed` or `skipped` with a reason, and the exit stays
+    non-zero while any is left. The scheduled drift job passes
+    `--zone dantofa.dev --prune-edge-certs`, so leaks stop eating the zone's certificate
+    budget without anyone stepping in. Volumes, Snapshots and LoadBalancers stay
+    report-only.
 - **Edge certificates are a shared, finite resource.** The zone is assumed to allow 100
   edge certificates (the Enterprise figure; unconfirmed for this plan), shared by every
   repo's concurrent previews, the standing certs and any leaks. Bootstrap refuses to

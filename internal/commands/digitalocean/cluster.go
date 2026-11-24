@@ -564,6 +564,8 @@ func newClusterAuditCmd(token *string) *cobra.Command {
 	var (
 		zones           []string
 		cloudflareToken string
+		prune           bool
+		pruneGrace      time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "audit",
@@ -574,10 +576,16 @@ func newClusterAuditCmd(token *string) *cobra.Command {
 			"catches what that doesn't cover: a process killed between create and a " +
 			"later delete, or a resource created outside dctl entirely. With --zone it " +
 			"also reports per-cluster Cloudflare edge certificates whose cluster is gone " +
-			"(a failed, --force or --no-teardown delete). Exits non-zero when drift is " +
-			"found, so a scheduled job can gate on it.",
+			"(a failed, --force or --no-teardown delete); --prune-edge-certs deletes those " +
+			"(only those, and only once older than --prune-grace and still clusterless " +
+			"on a re-check), marking each certificate's outcome in the report. Volumes, " +
+			"Snapshots and LoadBalancers are only ever reported. Exits non-zero when " +
+			"drift is left over, so a scheduled job can gate on it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if prune && len(zones) == 0 {
+				return render.Fail(errors.New("--prune-edge-certs needs at least one --zone"))
+			}
 			client, err := doclient.NewClusterClient(*token)
 			if err != nil {
 				return render.Fail(err)
@@ -598,6 +606,10 @@ func newClusterAuditCmd(token *string) *cobra.Command {
 				if report.OrphanedEdgeCerts, err = docore.AuditEdgeCerts(cmd.Context(), cfc, zones, live); err != nil {
 					return render.Fail(err)
 				}
+				if prune {
+					report.OrphanedEdgeCerts = docore.PruneEdgeCerts(cmd.Context(), cfc, client,
+						report.OrphanedEdgeCerts, pruneGrace, time.Now())
+				}
 				ok = report.Empty()
 			}
 			if err := render.JSON(report); err != nil {
@@ -614,6 +626,10 @@ func newClusterAuditCmd(token *string) *cobra.Command {
 	cmd.Flags().StringArrayVar(&zones, "zone", nil,
 		"A Cloudflare zone to audit for orphaned per-cluster edge certificates; repeatable.")
 	cmd.Flags().StringVar(&cloudflareToken, "cloudflare-token", "",
-		"Cloudflare API token for --zone (default $"+cloudflareEnvVar+").")
+		"Cloudflare API token for --zone (default $"+cloudflareEnvVar+"); --prune-edge-certs needs SSL and Certificates edit permission.")
+	cmd.Flags().BoolVar(&prune, "prune-edge-certs", false,
+		"Delete the orphaned per-cluster edge certificates --zone reports (never a shared or a live cluster's certificate).")
+	cmd.Flags().DurationVar(&pruneGrace, "prune-grace", docore.DefaultPruneGrace,
+		"Minimum age of an orphaned edge certificate before --prune-edge-certs deletes it (protects certificates ordered without a cluster, e.g. the CI drill).")
 	return cmd
 }

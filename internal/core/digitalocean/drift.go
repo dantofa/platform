@@ -3,8 +3,10 @@ package digitalocean
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/dantofa/platform/internal/core/edgecert"
+	"github.com/dantofa/platform/internal/core/retry"
 )
 
 // Volume is a DigitalOcean block-storage volume as surfaced to the user.
@@ -53,6 +55,10 @@ type DriftAPI interface {
 type OrphanedEdgeCert struct {
 	Zone string `json:"zone"`
 	edgecert.Pack
+	// Outcome is set only by PruneEdgeCerts: PruneDeleted, PruneFailed or
+	// PruneSkipped, with Reason saying why when it was not deleted.
+	Outcome string `json:"outcome,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // DriftReport is the account-wide Volumes/VolumeSnapshots/LoadBalancers (and,
@@ -65,12 +71,17 @@ type DriftReport struct {
 	OrphanedEdgeCerts       []OrphanedEdgeCert `json:"orphaned_edge_certs,omitempty"`
 }
 
-// Empty reports whether the audit found no drift.
+// Empty reports whether the audit left no drift behind: nothing found, or (for
+// edge certificates) everything found was pruned.
 func (r DriftReport) Empty() bool {
+	for _, c := range r.OrphanedEdgeCerts {
+		if c.Outcome != PruneDeleted {
+			return false
+		}
+	}
 	return len(r.OrphanedVolumes) == 0 &&
 		len(r.OrphanedVolumeSnapshots) == 0 &&
-		len(r.OrphanedLoadBalancers) == 0 &&
-		len(r.OrphanedEdgeCerts) == 0
+		len(r.OrphanedLoadBalancers) == 0
 }
 
 // AuditDrift audits the account for Volumes, VolumeSnapshots, and
@@ -151,7 +162,7 @@ func AuditEdgeCerts(ctx context.Context, api edgecert.API, zones []string, live 
 	}
 	var out []OrphanedEdgeCert
 	for _, zone := range zones {
-		packs, err := api.ListCertificatePacks(ctx, zone)
+		packs, err := edgecert.List(ctx, api, zone)
 		if err != nil {
 			return nil, fmt.Errorf("listing edge certificates in %s: %w", zone, err)
 		}
@@ -161,3 +172,79 @@ func AuditEdgeCerts(ctx context.Context, api edgecert.API, zones []string, live 
 	}
 	return out, nil
 }
+
+// Outcomes of pruning one orphaned edge certificate.
+const (
+	PruneDeleted = "deleted"
+	PruneFailed  = "failed"
+	PruneSkipped = "skipped"
+)
+
+// DefaultPruneGrace is how old an orphaned edge certificate must be before
+// PruneEdgeCerts deletes it. Certificates are ordered without a cluster too (the
+// edge-cert CI drill, a manual `edge-cert request`), and those look orphaned for
+// as long as they live; the grace period outlasts them (the drill's job is capped
+// at 40 minutes, a bootstrap's certificate wait at 20).
+const DefaultPruneGrace = 2 * time.Hour
+
+// clusterLister is the slice of ClusterAPI the prune re-checks against.
+type clusterLister interface {
+	List(ctx context.Context) ([]Cluster, error)
+}
+
+// PruneEdgeCerts deletes the orphaned edge certificates AuditEdgeCerts reported,
+// and nothing else, marking each with its outcome. Listing the live clusters and
+// deleting are not atomic, so each certificate is guarded twice before its
+// delete: it must be older than grace (an unknown age counts as too young), and
+// its cluster must still be absent from a fresh cluster list taken right
+// before the delete. Deletes go through edgecert.DeletePack, the same path
+// teardown uses. A failure on one certificate does not stop the rest.
+func PruneEdgeCerts(ctx context.Context, api edgecert.API, clusters clusterLister, orphans []OrphanedEdgeCert, grace time.Duration, now time.Time) []OrphanedEdgeCert {
+	out := make([]OrphanedEdgeCert, len(orphans))
+	for i, o := range orphans {
+		out[i] = pruneOne(ctx, api, clusters, o, grace, now)
+	}
+	return out
+}
+
+func pruneOne(ctx context.Context, api edgecert.API, clusters clusterLister, o OrphanedEdgeCert, grace time.Duration, now time.Time) OrphanedEdgeCert {
+	skip := func(reason string) OrphanedEdgeCert {
+		o.Outcome, o.Reason = PruneSkipped, reason
+		return o
+	}
+	fail := func(err error) OrphanedEdgeCert {
+		o.Outcome, o.Reason = PruneFailed, err.Error()
+		return o
+	}
+	if o.CreatedOn.IsZero() {
+		return skip("creation time unknown")
+	}
+	if age := now.Sub(o.CreatedOn); age < grace {
+		return skip(fmt.Sprintf("ordered %s ago, within the %s grace period", age.Round(time.Minute), grace))
+	}
+	var live []Cluster
+	if err := retry.Do(ctx, pruneCallTimeout, pruneCallDelay, func() (err error) {
+		live, err = clusters.List(ctx)
+		return err
+	}); err != nil {
+		return fail(fmt.Errorf("re-checking live clusters: %w", err))
+	}
+	names := make([]string, len(live))
+	for i, c := range live {
+		names[i] = c.Name
+	}
+	if len(edgecert.Orphans([]edgecert.Pack{o.Pack}, o.Zone, names)) == 0 {
+		return skip("its cluster exists now")
+	}
+	if err := edgecert.DeletePack(ctx, api, o.Zone, o.Pack); err != nil {
+		return fail(err)
+	}
+	o.Outcome = PruneDeleted
+	return o
+}
+
+// Retry budget for the prune's cluster re-check.
+const (
+	pruneCallTimeout = 30 * time.Second
+	pruneCallDelay   = 2 * time.Second
+)
