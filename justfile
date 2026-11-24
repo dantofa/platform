@@ -57,19 +57,30 @@ shellcheck:
   # Lint the shebang (script) recipes in this justfile with shellcheck. Line
   # recipes and any containing just-interpolations are not valid standalone
   # shell, so the second grep skips them (the char class avoids a literal
-  # interpolation token here).
+  # interpolation token here). Every recipe is checked before failing, so one
+  # run reports all findings; any failure fails the recipe.
+  set -euo pipefail
+  failed=()
   for recipe in $(just --summary); do
     body="$(just --show "$recipe")"
     if printf '%s\n' "$body" | grep -Eq '^[[:space:]]*#!.*(bash|sh)' \
        && ! printf '%s\n' "$body" | grep -q '[{][{]'; then
       # Drop everything up to and including the (indented) shebang line; the
       # shell is given via -s, and indented bash is valid.
-      printf '%s\n' "$body" | sed -n '/#!/,$p' | tail -n +2 | shellcheck -s bash -
+      if ! printf '%s\n' "$body" | sed -n '/#!/,$p' | tail -n +2 | shellcheck -s bash -; then
+        failed+=("$recipe")
+      fi
     fi
   done
   # Also lint standalone shell scripts shipped in the repo (not justfile recipes),
   # e.g. the devbox plugin smoke test.
-  shellcheck devbox/*.sh
+  if ! shellcheck devbox/*.sh; then
+    failed+=("devbox/*.sh")
+  fi
+  if [ "${#failed[@]}" -gt 0 ]; then
+    echo "shellcheck failed: ${failed[*]}" >&2
+    exit 1
+  fi
 
 lint: shellcheck
   #!/usr/bin/env bash
@@ -189,7 +200,13 @@ local-e2e:
     echo "attempt ${i}/${retries}: not ready, retrying in ${sleep}s..."
     sleep "$sleep"
   done
-  just cluster local delete
+  TF_E2E_KEEP=true just cluster verify terraform
+  out="$(just cluster local delete)"
+  printf '%s\n' "$out"
+  if ! jq -e '.teardown.terraform_deleted >= 1' <<<"$out" >/dev/null; then
+    echo "e2e FAILED: teardown did not drain the Terraform object" >&2
+    exit 1
+  fi
   if [ -e .kubeconfig ]; then
     echo "e2e FAILED: delete left .kubeconfig behind" >&2
     exit 1

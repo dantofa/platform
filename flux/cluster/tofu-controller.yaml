@@ -1,0 +1,35 @@
+---
+# tofu-controller: Terraform/OpenTofu applied from Git by Flux. A shared stack the
+# `cluster` reconcile root loads on every cluster type (issue #107). The platform
+# ships the CONTROLLER ONLY -- no `Terraform` objects -- the same split as CNPG:
+# a downstream declares its own `Terraform` objects in its own namespace and
+# reconcile root, and depends on this layer.
+#
+# Unconditional rather than opt-in for the same reason as CNPG and ESO: it
+# installs cluster-scoped CRDs and one cluster-wide controller, so two consumers
+# each shipping their own copy collide. Idle cost is one controller pod.
+#
+# Who may use it, and as whom, is the tofu-controller-policies stack: a namespace
+# opts in with the dantofa.dev/terraform=enabled label, which also generates the
+# runner's ServiceAccount and namespaced RoleBinding there.
+#
+# wait: `dependsOn: tofu-controller` (policies, downstreams) then means the
+# controller is serving and the Terraform CRD is established, not merely applied.
+# dependsOn prometheus-operator-crds: the chart renders a ServiceMonitor, which
+# Helm's install validates against discovery (see cloudnative-pg.yaml).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tofu-controller
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./flux/cluster/tofu-controller
+  prune: true
+  wait: true
+  dependsOn:
+    - name: prometheus-operator-crds
+  sourceRef:
+    kind: ${source_kind}
+    name: ${source_name}
+    namespace: flux-system

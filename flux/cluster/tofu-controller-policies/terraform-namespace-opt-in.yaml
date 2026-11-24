@@ -1,0 +1,37 @@
+---
+# A namespace runs Terraform only if it opted in with the
+# dantofa.dev/terraform=enabled label. Runner pods execute arbitrary Terraform with
+# whatever credentials the object hands them, so this is a deliberate per-namespace
+# decision rather than something any namespace gets by default. The same label
+# generates the namespace's runner identity (terraform-runner-identity.yaml).
+#
+# NotIn also matches namespaces without the label at all (label-selector
+# semantics), which is the point. CREATE/UPDATE only, so an object in a namespace
+# that later loses the label can still be deleted (and destroyed).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: terraform-namespace-opt-in
+spec:
+  background: false
+  rules:
+    - name: require-opt-in-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - infra.contrib.fluxcd.io/v1alpha2/Terraform
+              operations: ["CREATE", "UPDATE"]
+              namespaceSelector:
+                matchExpressions:
+                  - key: dantofa.dev/terraform
+                    operator: NotIn
+                    values: ["enabled"]
+      validate:
+        failureAction: Enforce
+        message: >-
+          Terraform objects are only allowed in namespaces labelled
+          dantofa.dev/terraform=enabled. Add that label to namespace
+          {{request.namespace}} to opt in (it also provisions the tf-runner
+          ServiceAccount the runner pods use).
+        deny: {}

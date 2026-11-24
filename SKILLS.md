@@ -25,8 +25,8 @@ your task to a section, follow the convention, reuse the primitive.
 - **Base stacks on every cluster**: cert-manager, External Secrets Operator (ESO),
   Velero (cluster backups), Kyverno (+ baseline governance policies), Trivy (image CVE
   scanning + gate), prometheus-operator CRDs, an always-on local Prometheus (metrics),
-  local Loki (logs), local Tempo (traces), Grafana Alloy collectors, a cost-exporter, and
-  the CloudNativePG operator (see "Postgres").
+  local Loki (logs), local Tempo (traces), Grafana Alloy collectors, a cost-exporter,
+  the CloudNativePG operator (see "Postgres"), and tofu-controller (see "Terraform").
 - **Ingress**: Cloudflare Tunnel (DOKS default) or Traefik + external-dns behind a DO
   LoadBalancer (`--dolb`); a local-only Traefik on kind, published on the host's real
   `:80`/`:443`.
@@ -654,6 +654,89 @@ The exclusion is by object, not by volume name, so it covers volumes you add lat
 uses Kyverno's add-if-absent anchor, so setting `velero.io/exclude-from-backup: "false"`
 yourself (on the `Cluster`, or via its `inheritedMetadata`) still wins — at which point the
 two failure modes above are yours to manage.
+
+## Terraform (tofu-controller)
+
+The platform ships **tofu-controller**, which applies Terraform/OpenTofu from a Flux
+source. It is the controller only. Do not install it yourself: it registers cluster-scoped
+CRDs, so a second copy collides. Declare your own `Terraform` objects
+(`infra.contrib.fluxcd.io/v1alpha2`) in your own namespace and reconcile root, and add
+`dependsOn: [{name: tofu-controller-policies, namespace: flux-system}]` so the policies
+below are in place first.
+
+**When to use it.** Only for resources that live in some API's own database rather than
+in Kubernetes: an identity provider's projects/apps/clients, a SaaS account's settings.
+Anything that is a Kubernetes object (Deployments, Secrets, CRs of an operator) stays a
+plain manifest in your `flux/`. Terraform adds a runner pod and provider downloads to
+every reconcile.
+
+**Opt in per namespace.** Label the namespace `dantofa.dev/terraform: enabled`.
+- Without it, a `Terraform` object is denied at admission
+  (`terraform-namespace-opt-in`).
+- The label also generates the runner's identity in that namespace: a `tf-runner`
+  ServiceAccount and a RoleBinding to `tf-runner-role` (`terraform-runner-identity`).
+  Runners use it by default. It reaches Secrets, ConfigMaps and Leases in that namespace
+  only, never another's.
+
+**Which source you may use.** Your `Terraform` object's `sourceRef` must be either a source
+in its own namespace, or the `flux-system` source named after your namespace's
+`dantofa.dev/tenant` label (`terraform-own-source-only`). Register your repo under that
+name: `dctl local cluster push --name <tenant>` on kind, `dctl flux source create <tenant>`
+on DOKS. Anything else is denied with a message saying so. This is a guard against
+pointing at the wrong source, not a security boundary.
+
+**Applying and outputs.**
+- Set `approvePlan: auto`, or nothing is applied.
+- `writeOutputsToSecret: {name: <secret>}` publishes outputs as a Secret in your namespace
+  (e.g. an OIDC client id/secret your app mounts).
+
+**Runner pods** run in your namespace, under the tenant baseline when it carries
+`dantofa.dev/tenant`:
+- **Pod Security:** the upstream runner pod already meets restricted Pod Security.
+- **Resources:** it sets none, so your `LimitRange` defaults apply. The template's
+  256Mi memory limit can be too small for a real provider, so set
+  `runnerPodTemplate.spec.resources` explicitly (the platform's e2e uses 128Mi request /
+  512Mi limit). Every run is a pod counted against your `ResourceQuota`.
+- **Network:** the tenant template's NetworkPolicy restricts ingress only.
+  - Ingress: the controller in `tofu-system` dials the runner on port 30000. That is
+    allowed because `tofu-system` carries no tenant label; keep it that way if you write
+    your own policy.
+  - Egress: if you restrict it, allow the Kubernetes API server (the state backend), the
+    provider registry (`registry.opentofu.org`; runners run OpenTofu, and the registry
+    redirects downloads to the provider's release host, e.g. `github.com`), and whatever
+    APIs your Terraform targets. Runners need no access to `flux-system`: the controller
+    downloads the source and streams it to the runner, and the platform's
+    `allow-tofu-controller-artifacts` NetworkPolicy lets it past Flux's own.
+
+**Providers** are downloaded from the registry on every run (runners use scratch space),
+not once per cluster. Pin provider versions exactly in `required_providers`.
+
+**State** is kept in Secrets in your namespace (the default Kubernetes backend). Two
+things to know:
+- **State Secrets contain your outputs and resource attributes in clear**, sensitive ones
+  included. Treat the namespace's Secrets accordingly.
+- **State and the system it describes can be restored to different points in time.** On a
+  long-lived cluster Velero restores the state Secrets as of the backup, while a
+  CNPG-backed target (e.g. an identity provider's database) comes back by point-in-time
+  recovery from its own WAL archive. After a restore the next run may try to recreate or
+  duplicate resources, and clients may get new ids/secrets. Suspend the object (`spec.suspend: true`),
+  inspect a plan (`approvePlan` unset with `storeReadablePlan: human` plans without
+  applying), and reconcile state (`terraform import`, state edits)
+  before letting it apply.
+
+**Deletion and teardown.**
+- Deleting a `Terraform` object only runs `destroy` if it sets
+  `destroyResourcesOnDeletion: true`. Without it the state is dropped and the resources
+  stay.
+- `cluster delete` (DOKS and kind) deletes every `Terraform` object first and waits for
+  them to go, before the ingress teardown. So with `destroyResourcesOnDeletion: true`, a
+  preview's external resources are destroyed instead of leaking with the state. A drain
+  that does not finish in 10 minutes fails the delete; `--force` proceeds anyway.
+- **If your Terraform manages anything outside the cluster, set
+  `destroyResourcesOnDeletion: true`.**
+
+`just cluster verify terraform` is the platform's own end-to-end check of all of the
+above.
 
 ## Secrets
 

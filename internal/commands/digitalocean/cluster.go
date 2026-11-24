@@ -207,7 +207,9 @@ func newClusterDeleteCmd(token *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <name>",
 		Short: "Delete a cluster by name. Idempotent: succeeds if already absent.",
-		Long: "Delete a cluster by name. First gracefully tears down its ingress " +
+		Long: "Delete a cluster by name. First deletes its tofu-controller Terraform " +
+			"objects and waits for them to go (running destroy where they set " +
+			"destroyResourcesOnDeletion), then gracefully tears down its ingress " +
 			"(deletes the Ingress objects so external-dns / the tunnel controller " +
 			"remove the Cloudflare records, then waits for the records to clear) so " +
 			"the destroyed cluster does not orphan DNS records. --no-teardown skips " +

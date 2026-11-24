@@ -2,6 +2,7 @@ package teardown
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -157,8 +158,9 @@ func ResolveTunnel(ctx context.Context, r ClusterReader) (TunnelRef, bool, error
 	return TunnelRef{AccountID: account, Name: name}, true, nil
 }
 
-// Run is the full teardown entrypoint a delete command calls: it resolves the
-// Cloudflare token and zone from the cluster, builds the Cloudflare client via
+// Run is the full teardown entrypoint a delete command calls. It first drains the
+// cluster's Terraform objects (see DrainTerraform), on every cluster, ingress
+// stack or not. Then it resolves the Cloudflare token and zone from the cluster, builds the Cloudflare client via
 // newCF, drains the ingress DNS records, deletes the cluster's edge certificate
 // through certs (nil when the caller has no certificate credential or the cluster
 // type has no edge: nothing is deleted and nothing is reported), and — on a cluster with a Cloudflare
@@ -166,6 +168,27 @@ func ResolveTunnel(ctx context.Context, r ClusterReader) (TunnelRef, bool, error
 // Keeping this in core lets the DOKS and local delete commands stay thin and
 // share the exact same flow (the tunnel steps are simply no-ops on DOKS).
 func Run(ctx context.Context, r ClusterReader, k KubeAPI, newCF func(token string) (CloudflareAPI, error), certs edgecert.API, timeout, interval time.Duration) (Result, error) {
+	// Drain Terraform before anything its runners may need goes (the ingress,
+	// target services, credentials). A failure here must not skip the rest --
+	// under --force the delete proceeds, and the DNS drain and edge-certificate
+	// reap still have to run -- so it is joined onto whatever follows.
+	suspended := 0
+	suspend := func(ctx context.Context) (err error) {
+		suspended, err = k.SuspendKustomizations(ctx)
+		return err
+	}
+	drained, tfErr := DrainTerraform(ctx, k, suspend, terraformDrainTimeout, interval)
+	res, err := runIngress(ctx, r, k, newCF, certs, timeout, interval)
+	res.TerraformDeleted = drained
+	// The ingress drain suspends again (a no-op count of the same objects) only
+	// when it runs; report the drain's suspension when it did not.
+	res.SuspendedKustomizations = max(res.SuspendedKustomizations, suspended)
+	return res, errors.Join(tfErr, err)
+}
+
+// runIngress is the Cloudflare half of Run: the ingress DNS drain, the edge
+// certificate, and the tunnel.
+func runIngress(ctx context.Context, r ClusterReader, k KubeAPI, newCF func(token string) (CloudflareAPI, error), certs edgecert.API, timeout, interval time.Duration) (Result, error) {
 	r = WithRetry(r, readTimeout, readDelay)
 	token, err := ResolveCloudflareToken(ctx, r)
 	if err != nil {

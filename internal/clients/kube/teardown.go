@@ -7,6 +7,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
 	teardowncore "github.com/dantofa/platform/internal/core/teardown"
@@ -133,4 +135,49 @@ func (c *Client) ConfigMapValue(ctx context.Context, namespace, name, key string
 		return "", err
 	}
 	return cm.Data[key], nil
+}
+
+// terraformGVR is tofu-controller's Terraform kind.
+var terraformGVR = schema.GroupVersionResource{
+	Group:    "infra.contrib.fluxcd.io",
+	Version:  "v1alpha2",
+	Resource: "terraforms",
+}
+
+// listTerraforms lists every Terraform object; an absent CRD is an empty list.
+func (c *Client) listTerraforms(ctx context.Context) ([]unstructured.Unstructured, error) {
+	list, err := c.dyn.Resource(terraformGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// TerraformObjects counts the Terraform objects in every namespace. Implements
+// teardowncore.TerraformAPI.
+func (c *Client) TerraformObjects(ctx context.Context) (int, error) {
+	items, err := c.listTerraforms(ctx)
+	return len(items), err
+}
+
+// DeleteTerraformObjects requests deletion of every Terraform object, returning
+// the count. Implements teardowncore.TerraformAPI.
+func (c *Client) DeleteTerraformObjects(ctx context.Context) (int, error) {
+	items, err := c.listTerraforms(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for i := range items {
+		item := &items[i]
+		err := c.dyn.Resource(terraformGVR).Namespace(item.GetNamespace()).Delete(ctx, item.GetName(), metav1.DeleteOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			return n, fmt.Errorf("deleting terraform %s/%s: %w", item.GetNamespace(), item.GetName(), err)
+		}
+		n++
+	}
+	return n, nil
 }

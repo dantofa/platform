@@ -1,0 +1,36 @@
+---
+# What Kyverno needs for the Terraform policies -- and, as much as the point, what
+# it does not.
+#
+# The runner identity rule generates a ServiceAccount and a RoleBinding to the
+# chart's tf-runner-role ClusterRole. Kubernetes only lets a subject create a
+# binding to a role whose permissions it holds itself, OR that it may `bind`.
+# tf-runner-role is full CRUD on Secrets, so holding it would hand Kyverno every
+# Secret in every namespace; `bind` on that one role name is the narrow grant.
+#
+# Verbs follow kyverno-cnpg-backup-rbac.yaml: get/list for the admission
+# controller (it validates a generate rule can act), create/update/delete for the
+# background controller (it generates), watch for `synchronize`. The reports
+# controller reads the Terraform kind the validate policies match.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno:terraform
+  labels:
+    rbac.kyverno.io/aggregate-to-admission-controller: "true"
+    rbac.kyverno.io/aggregate-to-background-controller: "true"
+    rbac.kyverno.io/aggregate-to-reports-controller: "true"
+rules:
+  - apiGroups: ["infra.contrib.fluxcd.io"]
+    resources: ["terraforms"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["tf-runner-role"]
+    verbs: ["bind"]

@@ -1,0 +1,35 @@
+---
+# Let tofu-controller download Terraform sources.
+#
+# The controller (not the runner) fetches a Terraform object's source artifact
+# from source-controller in flux-system, then streams it to the runner pod over
+# gRPC. `flux install` puts a NetworkPolicy there (allow-egress) that admits
+# ingress only from pods inside flux-system, so without this every artifact
+# download times out and the object never leaves Initializing (found by `just
+# cluster verify terraform`). Same on kind and DOKS: both are installed by `flux
+# install`.
+#
+# Narrow on both ends: only source-controller's artifact port, and only the
+# tofu-controller pod. Runner pods need no access to flux-system at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-tofu-controller-artifacts
+  namespace: flux-system
+spec:
+  podSelector:
+    matchLabels:
+      app: source-controller
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: tofu-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tofu-controller
+      ports:
+        - port: http
+          protocol: TCP

@@ -458,7 +458,9 @@ func newLocalDeleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete [name]",
 		Short: "Delete a local cluster. Idempotent: succeeds if already absent.",
-		Long: "Delete a local cluster. First gracefully tears down its ingress so the " +
+		Long: "Delete a local cluster. First deletes its tofu-controller Terraform " +
+			"objects and waits for them to go (running destroy where they set " +
+			"destroyResourcesOnDeletion), then gracefully tears down its ingress so the " +
 			"tunnel controller removes the Cloudflare records (and they are not " +
 			"orphaned once the cluster is gone). --no-teardown skips this; --force " +
 			"deletes anyway if teardown fails. Then removes the kubeconfig file create " +

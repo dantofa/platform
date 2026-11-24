@@ -453,6 +453,132 @@ cluster-verify-db-backup:
 
   echo "PITR drill OK: ${marker} survived a destroy/recover cycle, and a credential rotation reached the running database"
 
+# Integration check for the tofu-controller layer (issue #107). In a throwaway
+# tenant namespace opted in with dantofa.dev/terraform=enabled, it asserts:
+#   - the opt-in generates the tf-runner ServiceAccount
+#   - a Terraform object is denied in a namespace without the opt-in, and when it
+#     references a source that is not its tenant's
+#   - flux/test/terraform-e2e (one real provider) applies from the platform
+#     source, reaches Ready, and writes its output to a Secret
+#   - deleting the object runs destroy and removes it and its outputs Secret
+# TF_E2E_KEEP=true then leaves a second Terraform object in place, so a following
+# `cluster local delete` can assert its teardown drains it (local-e2e and the
+# `local` workflow do). Config: ${KUBECONFIG:-.kubeconfig}, ${TF_TIMEOUT:-600s},
+# ${TF_E2E_KEEP:-false}.
+cluster-verify-terraform:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  export KUBECONFIG="${KUBECONFIG:-.kubeconfig}"
+  keep="${TF_E2E_KEEP:-false}"
+  timeout="${TF_TIMEOUT:-600s}"
+  vars() { kubectl -n flux-system get configmap cluster-vars -o jsonpath="{.data.$1}"; }
+  source_kind="$(vars source_kind)"
+  source_name="$(vars source_name)"
+  ns="terraform-e2e-$(date +%s)"
+  cleanup() {
+    if [ "$keep" != true ]; then
+      kubectl delete namespace "$ns" --wait=false --ignore-not-found >/dev/null || true
+    fi
+  }
+  trap cleanup EXIT
+
+  # The tenant label names the platform source, so the own-source rule admits it.
+  printf '%s\n' \
+    "apiVersion: v1" \
+    "kind: Namespace" \
+    "metadata:" \
+    "  name: ${ns}" \
+    "  labels:" \
+    "    dantofa.dev/tenant: ${source_name}" \
+    "    dantofa.dev/terraform: enabled" \
+    | kubectl apply -f -
+
+  # terraform <name> <namespace> <source-namespace> <source-name>
+  terraform() {
+    printf '%s\n' \
+      "apiVersion: infra.contrib.fluxcd.io/v1alpha2" \
+      "kind: Terraform" \
+      "metadata:" \
+      "  name: $1" \
+      "  namespace: $2" \
+      "spec:" \
+      "  interval: 1h" \
+      "  approvePlan: auto" \
+      "  destroyResourcesOnDeletion: true" \
+      "  path: ./flux/test/terraform-e2e" \
+      "  sourceRef:" \
+      "    kind: ${source_kind}" \
+      "    name: $4" \
+      "    namespace: $3" \
+      "  writeOutputsToSecret:" \
+      "    name: $1-outputs" \
+      "  runnerPodTemplate:" \
+      "    spec:" \
+      "      resources:" \
+      "        requests:" \
+      "          cpu: 100m" \
+      "          memory: 128Mi" \
+      "        limits:" \
+      "          memory: 512Mi"
+  }
+
+  echo "Waiting for the generated tf-runner ServiceAccount..."
+  for _ in $(seq 1 60); do
+    kubectl -n "$ns" get serviceaccount tf-runner >/dev/null 2>&1 && break
+    sleep 2
+  done
+  kubectl -n "$ns" get serviceaccount tf-runner >/dev/null
+  kubectl -n "$ns" get rolebinding tf-runner-rolebinding >/dev/null
+
+  # expect_denied <description> <message fragment> -- reads a manifest on stdin
+  expect_denied() {
+    local out
+    if out="$(kubectl apply --dry-run=server -f - 2>&1)"; then
+      echo "TERRAFORM GATE FAILED: $1 was admitted" >&2
+      exit 1
+    fi
+    if ! grep -q "$2" <<<"$out"; then
+      echo "TERRAFORM GATE FAILED: $1 was rejected, but not by the platform policy:" >&2
+      echo "$out" >&2
+      exit 1
+    fi
+    echo "ok: $1 denied"
+  }
+  terraform e2e default flux-system "$source_name" \
+    | expect_denied "a Terraform object outside an opted-in namespace" "dantofa.dev/terraform=enabled"
+  terraform e2e "$ns" flux-system not-my-source \
+    | expect_denied "a reference to another tenant's source" "may only reference a source"
+
+  terraform e2e "$ns" flux-system "$source_name" | kubectl apply -f -
+  echo "Waiting for terraform/e2e to apply (timeout ${timeout})..."
+  if ! kubectl -n "$ns" wait --for=condition=Ready "terraform/e2e" --timeout="$timeout"; then
+    kubectl -n "$ns" get terraform e2e -o yaml >&2 || true
+    kubectl -n "$ns" get events --sort-by=.lastTimestamp >&2 || true
+    echo "TERRAFORM GATE FAILED: terraform/e2e did not become Ready" >&2
+    exit 1
+  fi
+  pet="$(kubectl -n "$ns" get secret e2e-outputs -o jsonpath='{.data.pet}' | base64 -d)"
+  if [ -z "$pet" ]; then
+    echo "TERRAFORM GATE FAILED: output 'pet' missing from secret e2e-outputs" >&2
+    exit 1
+  fi
+  echo "ok: applied, output pet=${pet} written to secret e2e-outputs"
+
+  # Deleting waits on the finalizer, which runs destroy first.
+  kubectl -n "$ns" delete terraform e2e --timeout="$timeout"
+  if kubectl -n "$ns" get secret e2e-outputs >/dev/null 2>&1; then
+    echo "TERRAFORM GATE FAILED: secret e2e-outputs survived the object's deletion" >&2
+    exit 1
+  fi
+  echo "ok: destroyed and removed, outputs secret gone"
+
+  if [ "$keep" = true ]; then
+    terraform e2e-keep "$ns" flux-system "$source_name" | kubectl apply -f -
+    kubectl -n "$ns" wait --for=condition=Ready "terraform/e2e-keep" --timeout="$timeout"
+    echo "ok: left terraform ${ns}/e2e-keep for the teardown drain"
+  fi
+  echo "TERRAFORM GATE PASSED"
+
 # Image security gate: fail if a PLATFORM image (one we deploy) carries a CRITICAL
 # vulnerability not accepted in the merged ignore list. DOKS-managed namespaces
 # (kube-system) are excluded -- those images are DigitalOcean's to patch. Gated on
