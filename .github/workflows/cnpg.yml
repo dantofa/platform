@@ -24,7 +24,14 @@ permissions: {}
 env:
   FORCE_COLOR: ""
   CLUSTER_NAME: platform-cnpg-${{ github.event.pull_request.number }}
-  BASE_DOMAIN: cnpg.dantofa.dev
+  # Unique per run: bootstrap orders a Cloudflare edge certificate for
+  # {*.<base>, <base>}, and Let's Encrypt allows only 5 certificates per week for
+  # the same exact name set. With a fixed name, runs stalled with the pack in
+  # initializing/pending_validation until the timeout -- most likely that limit,
+  # since per-run names (the edge-cert workflow) kept issuing in the meantime.
+  # Teardown finds the pack by the base domain in the cluster's cluster-vars, and
+  # `cluster audit --prune-edge-certs` reaps any a crashed run leaves behind.
+  BASE_DOMAIN: cnpg-${{ github.run_id }}-${{ github.run_attempt }}.dantofa.dev
   # nyc3, nyc2, and atl1 have all hit insufficient s-2vcpu-4gb capacity;
   # override here rather than in dctl's --region default so only CI is
   # pinned to sfo2 -- geographically farthest from the NYC metro cluster
@@ -55,7 +62,8 @@ jobs:
           # tested on DOKS. Same reasoning for the DO/Spaces client code: this is
           # the only job left that exercises a real bucket-scoped key, so a
           # regression there must not slip through on manifest-only path filters.
-          if printf '%s\n' "$files" | grep -qE '^(flux/cluster/cloudnative-pg(-barman)?(\.yaml$|/)|cluster\.just$|internal/(core|clients)/digitalocean/)'; then
+          # And this workflow itself: a change to how the drill runs is exercised.
+          if printf '%s\n' "$files" | grep -qE '^(flux/cluster/cloudnative-pg(-barman)?(\.yaml$|/)|cluster\.just$|internal/(core|clients)/digitalocean/|\.github/workflows/cnpg\.yml$)'; then
             echo "cnpg=true" >> "$GITHUB_OUTPUT"
           else
             echo "cnpg=false" >> "$GITHUB_OUTPUT"
