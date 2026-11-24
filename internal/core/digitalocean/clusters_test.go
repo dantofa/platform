@@ -21,6 +21,8 @@ type fakeClusterAPI struct {
 	associatedResourcesCalls int
 	deletedID                string
 	deletedResources         AssociatedResources // passed to DeleteSelective
+	deleteErrs               []error             // successive DeleteSelective results
+	deleteAttempts           []AssociatedResources
 }
 
 func (f *fakeClusterAPI) List(context.Context) ([]Cluster, error) { return f.clusters, nil }
@@ -40,6 +42,11 @@ func (f *fakeClusterAPI) AssociatedResources(_ context.Context, _ string) (Assoc
 }
 
 func (f *fakeClusterAPI) DeleteSelective(_ context.Context, id string, resources AssociatedResources) error {
+	call := len(f.deleteAttempts)
+	f.deleteAttempts = append(f.deleteAttempts, resources)
+	if call < len(f.deleteErrs) && f.deleteErrs[call] != nil {
+		return f.deleteErrs[call]
+	}
 	f.deletedID, f.deletedResources = id, resources
 	return nil
 }
@@ -323,5 +330,73 @@ func TestWaitForRunningTimeout(t *testing.T) {
 	var nr *ClusterNotReadyError
 	if !errors.As(err, &nr) || !nr.TimedOut {
 		t.Fatalf("expected timeout ClusterNotReadyError, got %v", err)
+	}
+}
+
+func unmanaged(id string) error {
+	return &UnmanagedResourceError{ID: id, Err: errors.New("resource [do:volume:" + id + "] specified is not a managed resource")}
+}
+
+// The CI failure this guards against: a PVC Volume listed as associated was gone
+// by the time of the delete, DigitalOcean refused the whole call, and the
+// cluster stayed up. The rejected Volume is dropped and the delete retried.
+func TestDeleteClusterRetriesWithoutUnmanagedResource(t *testing.T) {
+	f := &fakeDeleteAPI{fakeClusterAPI: fakeClusterAPI{
+		clusters: []Cluster{{ID: "id-9", Name: "prod"}},
+		associatedResources: AssociatedResources{
+			VolumeIDs:       []string{"vol-1", "vol-2"},
+			LoadBalancerIDs: []string{"lb-1"},
+		},
+		deleteErrs: []error{unmanaged("vol-2")},
+	}}
+	res, err := DeleteCluster(context.Background(), f, "prod", testReapTimeout, testReapInterval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.deletedID != "id-9" || len(f.deleteAttempts) != 2 {
+		t.Fatalf("want the cluster deleted on the second attempt, got deleted=%q after %d attempts", f.deletedID, len(f.deleteAttempts))
+	}
+	if f.associatedResourcesCalls != 2 {
+		t.Errorf("the retry must re-list associated resources, got %d listings", f.associatedResourcesCalls)
+	}
+	want := AssociatedResources{VolumeIDs: []string{"vol-1"}, LoadBalancerIDs: []string{"lb-1"}}
+	if !reflect.DeepEqual(f.deletedResources, want) || !reflect.DeepEqual(res.Associated, want) {
+		t.Errorf("want the retry (and result) without vol-2, got delete=%+v result=%+v", f.deletedResources, res.Associated)
+	}
+}
+
+func TestDeleteClusterGivesUpOnRepeatedUnmanagedResources(t *testing.T) {
+	ids := []string{"v1", "v2", "v3", "v4", "v5", "v6"}
+	var errs []error
+	for _, id := range ids {
+		errs = append(errs, unmanaged(id))
+	}
+	f := &fakeDeleteAPI{fakeClusterAPI: fakeClusterAPI{
+		clusters:            []Cluster{{ID: "id-9", Name: "prod"}},
+		associatedResources: AssociatedResources{VolumeIDs: ids},
+		deleteErrs:          errs,
+	}}
+	_, err := DeleteCluster(context.Background(), f, "prod", testReapTimeout, testReapInterval)
+	var u *UnmanagedResourceError
+	if !errors.As(err, &u) {
+		t.Fatalf("want the last UnmanagedResourceError, got %v", err)
+	}
+	if len(f.deleteAttempts) != deleteSelectiveAttempts || f.deletedID != "" {
+		t.Errorf("want %d attempts and no delete, got %d attempts, deleted=%q", deleteSelectiveAttempts, len(f.deleteAttempts), f.deletedID)
+	}
+}
+
+func TestDeleteClusterFailsFastOnOtherErrors(t *testing.T) {
+	boom := errors.New("forbidden")
+	f := &fakeDeleteAPI{fakeClusterAPI: fakeClusterAPI{
+		clusters:            []Cluster{{ID: "id-9", Name: "prod"}},
+		associatedResources: AssociatedResources{VolumeIDs: []string{"vol-1"}},
+		deleteErrs:          []error{boom},
+	}}
+	if _, err := DeleteCluster(context.Background(), f, "prod", testReapTimeout, testReapInterval); !errors.Is(err, boom) {
+		t.Fatalf("want %v, got %v", boom, err)
+	}
+	if len(f.deleteAttempts) != 1 {
+		t.Errorf("a non-unmanaged error must not be retried, got %d attempts", len(f.deleteAttempts))
 	}
 }
