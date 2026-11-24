@@ -30,6 +30,7 @@ type KubeAPI interface {
 	// A no-op returning 0 when the controller is absent (e.g. DOKS). Returns the
 	// count deleted.
 	StopTunnelController(ctx context.Context) (int, error)
+	TerraformAPI
 }
 
 // DNSAPI is the Cloudflare record surface teardown polls and falls back on
@@ -77,6 +78,9 @@ type Result struct {
 	// audit` reports it), but it must not pass silently.
 	EdgeCertsDeleted int    `json:"edge_certs_deleted,omitempty"`
 	EdgeCertError    string `json:"edge_cert_error,omitempty"`
+	// TerraformDeleted counts the Terraform objects drained (deleted, and their
+	// destroy awaited) before anything else was torn down.
+	TerraformDeleted int `json:"terraform_deleted,omitempty"`
 	// Skipped is set when the cluster has no ingress stack (no cloudflare-api
 	// secret), so there was nothing to tear down.
 	Skipped bool `json:"skipped,omitempty"`

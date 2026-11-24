@@ -126,6 +126,16 @@ jobs:
       - name: Verify CNPG point-in-time recovery
         run: nix develop --command just cluster verify db-backup
 
+      # tofu-controller layer (issue #107): the namespace opt-in and source
+      # policies deny what they should, a Terraform object with a real provider
+      # applies from the platform source and writes its output Secret, and its
+      # deletion runs destroy. TF_E2E_KEEP leaves one object behind for the
+      # delete step below to prove the teardown drain.
+      - name: Verify Terraform (tofu-controller)
+        env:
+          TF_E2E_KEEP: "true"
+        run: nix develop --command just cluster verify terraform
+
       # Image security gate: fail on unsuppressed CRITICAL CVEs in the platform
       # images we deploy (trivy-operator VulnerabilityReports vs
       # .trivyignore-cluster). Placed last so trivy-operator has had the whole
@@ -150,6 +160,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # On a run that got this far cleanly, the teardown must also have drained the
+      # Terraform object the Terraform step left behind. On a failed run, just
+      # delete: the drain is not what is under test then.
       - name: Delete local cluster
         if: always()
-        run: nix run .#default -- local cluster delete
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          out="$(nix run .#default -- local cluster delete)"
+          printf '%s\n' "$out"
+          if [ "$JOB_STATUS" = success ]; then
+            jq -e '.teardown.terraform_deleted >= 1' <<<"$out" >/dev/null \
+              || { echo "teardown did not drain the Terraform object left by the e2e"; exit 1; }
+          fi

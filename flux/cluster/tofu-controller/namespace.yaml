@@ -1,0 +1,8 @@
+---
+# Never label this namespace dantofa.dev/tenant: the controller dials every runner
+# pod over gRPC (port 30000), and the tenant-namespace NetworkPolicy admits that
+# only because it allows ingress from non-tenant namespaces.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tofu-system

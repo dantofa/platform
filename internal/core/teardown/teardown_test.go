@@ -18,11 +18,36 @@ type fakeKube struct {
 	suspendSeen bool
 	deleteSeen  bool
 	stopSeen    bool
+
+	// Terraform objects: tf exist until deleted, then go after tfDrainPolls
+	// more polls (never, when tfStuck).
+	tf           int
+	tfDrainPolls int
+	tfStuck      bool
+	tfDeleteSeen bool
+	tfOrder      []string // "suspend" / "delete-tf", in call order
+}
+
+func (f *fakeKube) TerraformObjects(context.Context) (int, error) {
+	if f.tfDeleteSeen && !f.tfStuck {
+		if f.tfDrainPolls == 0 {
+			return 0, nil
+		}
+		f.tfDrainPolls--
+	}
+	return f.tf, nil
+}
+
+func (f *fakeKube) DeleteTerraformObjects(context.Context) (int, error) {
+	f.tfDeleteSeen = true
+	f.tfOrder = append(f.tfOrder, "delete-tf")
+	return f.tf, nil
 }
 
 func (f *fakeKube) IngressHosts(context.Context) ([]string, error) { return f.hosts, nil }
 func (f *fakeKube) SuspendKustomizations(context.Context) (int, error) {
 	f.suspendSeen = true
+	f.tfOrder = append(f.tfOrder, "suspend")
 	return f.suspended, f.suspendErr
 }
 

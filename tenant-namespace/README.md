@@ -26,6 +26,10 @@ That label is the trigger for the base-stack **Kyverno policies**
 Platform namespaces don't carry the label, so nothing above touches the platform's
 own (occasionally privileged) components — a tenant is enforced only once it opts in.
 
+To run Terraform (tofu-controller) in the namespace, add a second label,
+`dantofa.dev/terraform: enabled`; see the "Terraform" section of SKILLS.md. The tenant
+label's value also names the `flux-system` source your `Terraform` objects may use.
+
 ## What this template ships
 
 | File | Purpose |

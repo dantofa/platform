@@ -25,3 +25,5 @@ resources:
   - tempo.yaml
   - k8s-monitoring.yaml
   - cost-exporter.yaml
+  - tofu-controller.yaml
+  - tofu-controller-policies.yaml

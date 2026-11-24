@@ -1,0 +1,71 @@
+---
+# The tofu-controller: one controller Deployment plus the Terraform CRD
+# (infra.contrib.fluxcd.io). Each reconcile of a `Terraform` object runs in a
+# short-lived runner pod in that object's own namespace, as the `tf-runner`
+# ServiceAccount there; the controller drives it over mTLS gRPC.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tofu-controller
+  namespace: tofu-system
+spec:
+  interval: 10m
+  chart:
+    spec:
+      chart: tofu-controller
+      # Exact pin; bumped by Renovate (flux manager). The runner image tag
+      # defaults to the chart's appVersion, so this pins both images.
+      version: "0.17.0"
+      sourceRef:
+        kind: HelmRepository
+        name: tofu-controller
+        namespace: tofu-system
+      interval: 1h
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    # A `Terraform` object references its source in flux-system, where every
+    # Flux source lives (the platform's, a downstream's GitRepository, the
+    # OCIRepository `dctl local cluster push` registers) -- so cross-namespace
+    # refs must be on. Which source a namespace may reference is restricted by
+    # the terraform-own-source-only Kyverno policy instead.
+    allowCrossNamespaceRefs: true
+    runner:
+      serviceAccount:
+        # SECURITY. The chart's default binds tf-runner-role (full CRUD on
+        # Secrets and ConfigMaps) with a ClusterRoleBinding, letting any tenant's
+        # Terraform read every Secret in the cluster: the Bitwarden machine token,
+        # the backup credentials, other tenants' Secrets. Namespaced, a runner
+        # reaches only Secrets/ConfigMaps/Leases in its own namespace.
+        namespacedRoleBindings: true
+        # The chart can only create runner identities for a static namespace
+        # list, which the platform cannot know for downstream namespaces. The
+        # terraform-runner-identity Kyverno policy generates them instead, in every
+        # namespace carrying dantofa.dev/terraform=enabled. (The chart always adds
+        # its own release namespace; nothing runs there.)
+        allowedNamespaces: []
+    # An unrelated AWS primitive-modules package the chart installs by default.
+    awsPackage:
+      install: false
+    # Controller metrics. Alloy already discovers ServiceMonitors
+    # (prometheusOperatorObjects.enabled in k8s-monitoring).
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+    # Bound the controller's footprint: it lands on every cluster type, kind
+    # included. Concurrency caps simultaneous runner pods cluster-wide.
+    concurrency: 4
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi

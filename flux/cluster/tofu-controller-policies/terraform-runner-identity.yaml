@@ -1,0 +1,63 @@
+---
+# Give every opted-in namespace the identity its runner pods run as.
+#
+# Runners run as the `tf-runner` ServiceAccount (the Terraform object's default
+# serviceAccountName) in the object's own namespace, bound to the chart's
+# tf-runner-role: Secrets/ConfigMaps/Leases, for the state backend and
+# writeOutputsToSecret. The chart can only create these for a static namespace
+# list, which the platform cannot know for downstream namespaces, so the opt-in
+# label generates them. A RoleBinding, never a ClusterRoleBinding: a runner
+# reaches only its own namespace (see the chart's namespacedRoleBindings in
+# tofu-controller/release.yaml).
+#
+# synchronize: removing the label (or the namespace) removes the identity, and
+# hand edits are reverted. generateExisting adopts namespaces labelled before the
+# policy existed.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: terraform-runner-identity
+spec:
+  background: true
+  generateExisting: true
+  rules:
+    - name: runner-service-account
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  dantofa.dev/terraform: enabled
+      generate:
+        apiVersion: v1
+        kind: ServiceAccount
+        name: tf-runner
+        namespace: "{{ request.object.metadata.name }}"
+        synchronize: true
+        data: {}
+    - name: runner-role-binding
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  dantofa.dev/terraform: enabled
+      generate:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        name: tf-runner-rolebinding
+        namespace: "{{ request.object.metadata.name }}"
+        synchronize: true
+        data:
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: tf-runner-role
+          subjects:
+            - kind: ServiceAccount
+              name: tf-runner
+              namespace: "{{ request.object.metadata.name }}"

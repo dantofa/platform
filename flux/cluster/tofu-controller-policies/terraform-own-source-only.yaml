@@ -1,0 +1,60 @@
+---
+# A Terraform object may only use its own tenant's Flux source.
+#
+# tofu-controller runs with cross-namespace refs on, because every Flux source
+# lives in flux-system. Unrestricted, any namespace could point a Terraform object
+# at any source there -- another tenant's private repo included -- and run its
+# code. This narrows it to:
+#   - a source in the object's own namespace (sourceRef.namespace unset or equal), or
+#   - the flux-system source named after the namespace's dantofa.dev/tenant label
+#     (the name `dctl local cluster push --name <app>` registers, and the name to
+#     give `dctl flux source create` on DOKS).
+#
+# A guardrail against referencing the wrong source, not a boundary against a
+# hostile downstream: downstream manifests are applied by Flux, which can write
+# flux-system itself.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: terraform-own-source-only
+spec:
+  # request.namespace and the namespace lookup are admission-time only.
+  background: false
+  rules:
+    - name: own-tenant-source
+      match:
+        any:
+          - resources:
+              kinds:
+                - infra.contrib.fluxcd.io/v1alpha2/Terraform
+              operations: ["CREATE", "UPDATE"]
+      preconditions:
+        all:
+          # Same-namespace references are always fine.
+          - key: "{{ request.object.spec.sourceRef.namespace || request.namespace }}"
+            operator: NotEquals
+            value: "{{ request.namespace }}"
+      context:
+        - name: tenant
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ request.namespace }}"
+            jmesPath: "metadata.labels.\"dantofa.dev/tenant\" || ''"
+      validate:
+        failureAction: Enforce
+        message: >-
+          A Terraform object may only reference a source in its own namespace, or
+          the flux-system source named after its namespace's dantofa.dev/tenant
+          label ('{{ tenant }}'). {{request.namespace}}/{{request.object.metadata.name}}
+          references {{request.object.spec.sourceRef.namespace}}/{{request.object.spec.sourceRef.name}}.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.sourceRef.namespace }}"
+                operator: NotEquals
+                value: flux-system
+              - key: "{{ tenant }}"
+                operator: Equals
+                value: ""
+              - key: "{{ request.object.spec.sourceRef.name }}"
+                operator: NotEquals
+                value: "{{ tenant }}"
